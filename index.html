@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0a0a0b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="FORGE">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>FORGE</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0a0a0b; --bg2:#121214; --bg3:#1a1a1d; --card:#161618; --card2:#1e1e22;
+  --line:#2a2a30; --line2:#363640;
+  --txt:#f4f4f5; --txt2:#a1a1aa; --txt3:#71717a;
+  --acc:#c6f432; --acc2:#a8d418; --accdim:#3a4216;
+  --red:#ff5a5a; --redbg:#2a1414; --amber:#ffb84d; --blue:#5ab0ff; --green:#4ade80;
+  --rad:18px; --radsm:12px;
+  --shadow:0 8px 30px rgba(0,0,0,.5);
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overscroll-behavior:none}
+body{
+  background:var(--bg);color:var(--txt);
+  font-family:'Archivo',-apple-system,sans-serif;
+  font-size:15px;line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+  padding-bottom:env(safe-area-inset-bottom);
+}
+.disp{font-family:'Anton',sans-serif;text-transform:uppercase;letter-spacing:.5px;font-weight:400}
+::-webkit-scrollbar{width:0;height:0}
+input,select,textarea,button{font-family:inherit;color:inherit}
+button{cursor:pointer;border:none;background:none}
+img{display:block;max-width:100%}
+
+/* ---------- App shell ---------- */
+#app{max-width:520px;margin:0 auto;min-height:100vh;position:relative}
+.screen{display:none;min-height:100vh;animation:fade .35s ease}
+.screen.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+.page{padding:calc(env(safe-area-inset-top) + 18px) 18px 110px}
+.topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px}
+.topbar h1{font-family:'Anton';font-size:30px;letter-spacing:.5px;line-height:1}
+.topbar .sub{color:var(--txt2);font-size:13px;font-weight:600;margin-top:3px;text-transform:uppercase;letter-spacing:1px}
+
+/* ---------- Bottom nav ---------- */
+.nav{position:fixed;bottom:0;left:0;right:0;z-index:50;
+  background:rgba(12,12,14,.85);backdrop-filter:blur(20px);
+  border-top:1px solid var(--line);
+  display:flex;justify-content:space-around;
+  padding:10px 6px calc(env(safe-area-inset-bottom) + 10px);
+  max-width:520px;margin:0 auto}
+.nav button{display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--txt3);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;flex:1;padding:4px 0;transition:color .2s}
+.nav button svg{width:24px;height:24px;stroke-width:2}
+.nav button.on{color:var(--acc)}
+.nav button.on svg{filter:drop-shadow(0 0 8px rgba(198,244,50,.4))}
+
+/* ---------- Cards ---------- */
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--rad);padding:18px;margin-bottom:14px}
+.card.flush{padding:0;overflow:hidden}
+.card-h{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.card-h .t{font-weight:800;font-size:13px;text-transform:uppercase;letter-spacing:1.2px;color:var(--txt2)}
+
+/* ---------- Buttons ---------- */
+.btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;
+  background:var(--acc);color:#0a0a0b;font-weight:800;font-size:16px;
+  padding:16px;border-radius:14px;text-transform:uppercase;letter-spacing:.5px;
+  transition:transform .12s,filter .2s}
+.btn:active{transform:scale(.97)}
+.btn.ghost{background:var(--card2);color:var(--txt);border:1px solid var(--line2)}
+.btn.sm{padding:11px;font-size:13px;width:auto}
+.btn:disabled{opacity:.4;filter:grayscale(.5)}
+
+/* ---------- Inputs ---------- */
+.field{margin-bottom:16px}
+.field label{display:block;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--txt2);margin-bottom:8px}
+.inp{width:100%;background:var(--bg2);border:1.5px solid var(--line);border-radius:12px;padding:15px;font-size:16px;font-weight:600;transition:border .2s}
+.inp:focus{outline:none;border-color:var(--acc)}
+.row{display:flex;gap:12px}
+.row>*{flex:1}
+
+/* segmented / chip select */
+.chips{display:flex;flex-wrap:wrap;gap:9px}
+.chip{background:var(--bg2);border:1.5px solid var(--line);border-radius:12px;padding:12px 16px;font-weight:700;font-size:14px;transition:.18s;flex:1;text-align:center;min-width:fit-content}
+.chip.on{background:var(--acc);color:#0a0a0b;border-color:var(--acc)}
+.chip.multi.on{background:var(--accdim);color:var(--acc);border-color:var(--acc)}
+
+/* ---------- Onboarding ---------- */
+#onb{background:var(--bg)}
+.onb-wrap{padding:calc(env(safe-area-inset-top) + 24px) 22px 130px;min-height:100vh}
+.onb-prog{height:5px;background:var(--bg3);border-radius:3px;overflow:hidden;margin-bottom:30px}
+.onb-prog>i{display:block;height:100%;background:var(--acc);border-radius:3px;transition:width .4s ease;box-shadow:0 0 12px rgba(198,244,50,.5)}
+.onb-step{display:none;animation:fade .4s ease}
+.onb-step.active{display:block}
+.onb-step h2{font-family:'Anton';font-size:32px;line-height:1.05;margin-bottom:8px}
+.onb-step .lead{color:var(--txt2);font-size:15px;margin-bottom:26px;font-weight:500}
+.onb-foot{position:fixed;bottom:0;left:0;right:0;max-width:520px;margin:0 auto;padding:16px 22px calc(env(safe-area-inset-bottom) + 16px);background:linear-gradient(transparent,var(--bg) 30%)}
+
+/* body fat picker */
+.bf-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.bf-opt{background:var(--bg2);border:2px solid var(--line);border-radius:14px;padding:8px 5px 10px;text-align:center;transition:.18s;position:relative}
+.bf-opt.on{border-color:var(--acc);background:var(--accdim)}
+.bf-opt svg{width:100%;height:110px;margin-bottom:4px}
+.bf-opt .pct{font-family:'Anton';font-size:17px;background:rgba(0,0,0,.45);border-radius:8px;padding:2px 0;margin:0 4px}
+.bf-opt .cue{font-size:9px;color:var(--txt3);font-weight:600;line-height:1.25;margin-top:5px;padding:0 2px;min-height:22px}
+.bf-opt.on .pct{color:var(--acc)}
+.bf-opt.on .cue{color:var(--txt2)}
+
+/* equipment categories */
+.eq-cat{margin-bottom:18px}
+.eq-cat .ct{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1.2px;color:var(--acc);margin-bottom:9px;display:flex;align-items:center;gap:7px}
+.eq-cat .ct::before{content:'';width:5px;height:5px;border-radius:50%;background:var(--acc)}
+.eq-cat .chips{flex-wrap:wrap}
+.eq-cat .chip{flex:0 0 auto;font-size:13px;padding:10px 13px}
+
+/* weight inventory */
+.winv{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;margin-bottom:6px}
+.winv .w{background:var(--bg2);border:1.5px solid var(--line);border-radius:10px;padding:9px 12px;font-weight:700;font-size:14px;display:flex;align-items:center;gap:7px}
+.winv .w.on{background:var(--acc);color:#0a0a0b;border-color:var(--acc)}
+.wgroup{margin-bottom:20px}
+.wgroup .wl{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--txt2);margin-bottom:4px}
+.wgroup .wh{font-size:11px;color:var(--txt3);margin-bottom:6px}
+.addw{display:flex;gap:8px;margin-top:8px}
+.addw input{flex:1;background:var(--bg2);border:1.5px solid var(--line);border-radius:10px;padding:10px;font-weight:700;font-size:14px}
+
+/* lift assess */
+.lift-row{background:var(--bg2);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:11px}
+.lift-row .nm{font-weight:800;font-size:15px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.lift-row .tier{font-size:11px;font-weight:800;padding:3px 9px;border-radius:20px;text-transform:uppercase;letter-spacing:.5px}
+.lift-row.unknown{opacity:.6}
+.dunno{font-size:11px;font-weight:700;color:var(--txt3);background:var(--bg3);border:1px solid var(--line);border-radius:8px;padding:5px 10px;white-space:nowrap}
+.dunno.on{background:var(--accdim);color:var(--acc);border-color:var(--acc)}
+
+/* ---------- Stat tiles ---------- */
+.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:var(--rad);padding:16px}
+.stat .v{font-family:'Anton';font-size:30px;line-height:1}
+.stat .l{font-size:11px;color:var(--txt2);font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:5px}
+.stat .v small{font-size:14px;color:var(--txt2)}
+
+/* rank ring */
+.rank-hero{background:linear-gradient(135deg,var(--card2),var(--card));border:1px solid var(--line2);border-radius:22px;padding:22px;margin-bottom:14px;position:relative;overflow:hidden}
+.rank-hero::before{content:'';position:absolute;top:-40%;right:-20%;width:220px;height:220px;background:radial-gradient(circle,rgba(198,244,50,.12),transparent 70%)}
+.rank-name{font-family:'Anton';font-size:40px;line-height:.95;color:var(--acc)}
+.rank-sub{color:var(--txt2);font-weight:600;font-size:13px;text-transform:uppercase;letter-spacing:1px;margin-top:4px}
+.rank-bar{height:8px;background:var(--bg3);border-radius:5px;margin-top:16px;overflow:hidden}
+.rank-bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--acc2),var(--acc));border-radius:5px;transition:width .6s}
+.rank-next{font-size:12px;color:var(--txt2);margin-top:8px;font-weight:600}
+.rank-next b{color:var(--txt)}
+
+/* muscle map */
+.mmap{display:flex;gap:8px;align-items:center;justify-content:center;padding:6px 0}
+.mmap svg{height:300px}
+.musc{transition:fill .3s;cursor:pointer}
+.mlegend{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-top:10px}
+.mlegend span{font-size:11px;color:var(--txt2);font-weight:600;display:flex;align-items:center;gap:5px}
+.mlegend i{width:12px;height:12px;border-radius:3px;display:inline-block}
+
+/* ---------- Workout ---------- */
+.day-pill{display:inline-flex;align-items:center;gap:6px;background:var(--accdim);color:var(--acc);font-weight:800;font-size:12px;padding:6px 12px;border-radius:20px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:14px}
+.ex-card{background:var(--card);border:1px solid var(--line);border-radius:var(--rad);margin-bottom:12px;overflow:hidden}
+.ex-head{padding:15px 16px;display:flex;justify-content:space-between;align-items:center;gap:10px}
+.ex-head .nm{font-weight:800;font-size:16px}
+.ex-head .meta{font-size:12px;color:var(--txt2);font-weight:600;margin-top:2px}
+.ex-musc{font-size:10px;font-weight:800;color:var(--acc);text-transform:uppercase;letter-spacing:.5px;background:var(--accdim);padding:2px 8px;border-radius:6px}
+.set-row{display:flex;align-items:center;gap:8px;padding:9px 16px;border-top:1px solid var(--line)}
+.set-row .si{font-family:'Anton';font-size:15px;color:var(--txt3);width:24px;text-align:center}
+.set-inp{flex:1;background:var(--bg2);border:1.5px solid var(--line);border-radius:9px;padding:10px;font-size:15px;font-weight:700;text-align:center}
+.set-inp:focus{outline:none;border-color:var(--acc)}
+.set-x{color:var(--txt3);font-size:11px;font-weight:700}
+.set-done{width:38px;height:38px;border-radius:9px;background:var(--bg2);border:1.5px solid var(--line);display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:.15s}
+.set-done.on{background:var(--green);border-color:var(--green)}
+.set-done.on svg{stroke:#0a0a0b}
+.set-done svg{width:18px;height:18px;stroke:var(--txt3);stroke-width:3}
+.set-tag{font-size:9px;font-weight:800;padding:2px 5px;border-radius:5px;text-transform:uppercase;background:var(--bg3);color:var(--txt2)}
+.addset{width:100%;padding:11px;font-weight:700;font-size:13px;color:var(--acc);border-top:1px solid var(--line);text-transform:uppercase;letter-spacing:.5px}
+
+/* rest timer */
+#restTimer{position:fixed;bottom:88px;left:50%;transform:translateX(-50%);z-index:60;
+  background:var(--acc);color:#0a0a0b;border-radius:16px;padding:12px 20px;font-weight:800;
+  display:none;align-items:center;gap:14px;box-shadow:0 8px 30px rgba(198,244,50,.4);min-width:240px}
+#restTimer.show{display:flex}
+#restTimer .tt{font-family:'Anton';font-size:26px;line-height:1}
+#restTimer .lab{font-size:10px;text-transform:uppercase;letter-spacing:1px;font-weight:800}
+#restTimer button{margin-left:auto;background:rgba(0,0,0,.15);border-radius:8px;padding:6px 10px;font-weight:800;font-size:12px}
+
+/* coach box */
+.coach{background:linear-gradient(135deg,#1a2410,#161618);border:1px solid var(--acc2);border-radius:var(--rad);padding:16px;margin-bottom:14px;position:relative}
+.coach .cl{display:flex;align-items:center;gap:8px;font-weight:800;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--acc);margin-bottom:8px}
+.coach p{font-size:14px;color:var(--txt);line-height:1.55}
+.coach .think{color:var(--txt2);font-style:italic}
+
+/* ---------- Calendar ---------- */
+.cal-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+.cal-head .m{font-family:'Anton';font-size:22px}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+.cal-dow{font-size:10px;color:var(--txt3);font-weight:800;text-align:center;text-transform:uppercase;padding-bottom:4px}
+.cal-day{aspect-ratio:1;border-radius:11px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:14px;font-weight:700;background:var(--bg2);border:1.5px solid transparent;position:relative;transition:.15s}
+.cal-day.empty{background:transparent}
+.cal-day.trained{background:var(--accdim);border-color:var(--acc);color:var(--acc)}
+.cal-day.rest{background:var(--bg3);color:var(--txt2)}
+.cal-day.missed{border-color:var(--red);color:var(--red)}
+.cal-day.today{box-shadow:0 0 0 2px var(--txt)}
+.cal-day .dot{width:5px;height:5px;border-radius:50%;background:var(--acc);position:absolute;bottom:6px}
+
+/* progress bars/graphs */
+.svg-chart{width:100%;height:160px}
+.pr-item{display:flex;align-items:center;gap:12px;padding:13px 0;border-bottom:1px solid var(--line)}
+.pr-item:last-child{border:none}
+.pr-medal{width:40px;height:40px;border-radius:11px;background:var(--accdim);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.pr-medal svg{width:22px;height:22px;stroke:var(--acc)}
+.pr-item .pn{font-weight:800;font-size:15px}
+.pr-item .pv{margin-left:auto;font-family:'Anton';font-size:22px;color:var(--acc)}
+.pr-item .pv small{font-size:12px;color:var(--txt2)}
+
+/* nutrition */
+.macro-ring{display:flex;gap:14px;justify-content:space-around;text-align:center;margin:6px 0}
+.macro-ring .mr{flex:1}
+.macro-ring .mv{font-family:'Anton';font-size:24px}
+.macro-ring .ml{font-size:10px;color:var(--txt2);font-weight:700;text-transform:uppercase;letter-spacing:.5px}
+.macro-ring .p{font-size:11px;color:var(--txt3)}
+.meal{background:var(--card);border:1px solid var(--line);border-radius:var(--rad);padding:16px;margin-bottom:12px}
+.meal .mh{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.meal .mname{font-weight:800;font-size:15px}
+.meal .mcal{font-family:'Anton';font-size:18px;color:var(--acc)}
+.meal .mdesc{font-size:13px;color:var(--txt2);line-height:1.5}
+.meal .mmacros{display:flex;gap:14px;margin-top:10px;font-size:11px;font-weight:700;color:var(--txt2)}
+.meal .mmacros b{color:var(--txt)}
+
+.food-log-item{display:flex;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid var(--line)}
+.food-log-item .fn{font-weight:700;font-size:14px}
+.food-log-item .fm{font-size:11px;color:var(--txt2)}
+.food-log-item .fc{margin-left:auto;font-weight:800;color:var(--txt2)}
+
+/* body / photos */
+.meas-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.meas{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:13px}
+.meas .mv{font-family:'Anton';font-size:22px}
+.meas .ml{font-size:10px;color:var(--txt2);font-weight:700;text-transform:uppercase;letter-spacing:.5px}
+.photo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.photo-grid .ph{aspect-ratio:.75;border-radius:12px;overflow:hidden;background:var(--bg2);border:1px solid var(--line);position:relative}
+.photo-grid .ph img{width:100%;height:100%;object-fit:cover}
+.photo-grid .ph .pd{position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,.8));font-size:9px;font-weight:700;padding:10px 6px 5px;text-align:center}
+.photo-add{aspect-ratio:.75;border-radius:12px;border:2px dashed var(--line2);display:flex;align-items:center;justify-content:center;color:var(--txt3)}
+
+/* modal */
+.modal{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.7);backdrop-filter:blur(6px);display:none;align-items:flex-end;justify-content:center}
+.modal.show{display:flex;animation:fade .25s}
+.modal-c{background:var(--bg2);border:1px solid var(--line2);border-radius:24px 24px 0 0;width:100%;max-width:520px;padding:24px 20px calc(env(safe-area-inset-bottom) + 24px);max-height:88vh;overflow-y:auto;animation:slideup .3s ease}
+@keyframes slideup{from{transform:translateY(100%)}to{transform:none}}
+.modal-c h3{font-family:'Anton';font-size:24px;margin-bottom:16px}
+.modal-grip{width:40px;height:4px;background:var(--line2);border-radius:3px;margin:0 auto 18px}
+
+/* toast */
+#toast{position:fixed;top:calc(env(safe-area-inset-top) + 16px);left:50%;transform:translateX(-50%) translateY(-120px);z-index:200;background:var(--card2);border:1px solid var(--line2);border-radius:14px;padding:13px 18px;font-weight:700;font-size:14px;box-shadow:var(--shadow);transition:transform .35s;max-width:90%;display:flex;align-items:center;gap:10px}
+#toast.show{transform:translateX(-50%) translateY(0)}
+#toast.good{border-color:var(--acc)}
+#toast.bad{border-color:var(--red)}
+
+.empty-state{text-align:center;padding:50px 20px;color:var(--txt3)}
+.empty-state svg{width:48px;height:48px;margin-bottom:14px;opacity:.5}
+.empty-state p{font-weight:600}
+
+.tabs{display:flex;gap:8px;margin-bottom:16px;overflow-x:auto;padding-bottom:2px}
+.tabs button{white-space:nowrap;padding:9px 15px;border-radius:20px;font-weight:700;font-size:13px;background:var(--card2);color:var(--txt2);border:1px solid var(--line)}
+.tabs button.on{background:var(--acc);color:#0a0a0b;border-color:var(--acc)}
+
+.fab{position:fixed;bottom:96px;right:calc(50% - 250px);z-index:55;width:56px;height:56px;border-radius:50%;background:var(--acc);display:flex;align-items:center;justify-content:center;box-shadow:0 8px 24px rgba(198,244,50,.4)}
+.fab svg{width:28px;height:28px;stroke:#0a0a0b;stroke-width:2.5}
+@media(max-width:540px){.fab{right:20px}}
+
+.small{font-size:12px;color:var(--txt3)}
+.divider{height:1px;background:var(--line);margin:16px 0}
+.tier-Untrained{background:#2a2a30;color:var(--txt2)}
+.tier-Beginner{background:#3a2a1a;color:#d9a066}
+.tier-Novice{background:#1a2a3a;color:var(--blue)}
+.tier-Intermediate{background:#1a3a2a;color:var(--green)}
+.tier-Advanced{background:var(--accdim);color:var(--acc)}
+.tier-Elite{background:#3a1a3a;color:#e066d9}
+</style>
+</head>
+<body>
+<div id="toast"></div>
+
+<div id="app">
+  <!-- ============ ONBOARDING ============ -->
+  <div id="onb" class="screen active">
+    <div class="onb-wrap">
+      <div class="onb-prog"><i id="onbBar" style="width:0"></i></div>
+
+      <!-- 0: welcome -->
+      <div class="onb-step active" data-step="0">
+        <div style="text-align:center;padding-top:30px">
+          <div class="disp" style="font-size:64px;color:var(--acc);line-height:1;letter-spacing:2px">FORGE</div>
+          <p class="lead" style="margin-top:14px">Your AI strength coach. Smart programs, real progression, honest feedback — built around your gym, your weights, your body.</p>
+        </div>
+      </div>
+
+      <!-- 1: basics -->
+      <div class="onb-step" data-step="1">
+        <h2>The basics</h2>
+        <p class="lead">This calibrates everything — strength standards, calories, the lot.</p>
+        <div class="field"><label>What should I call you?</label><input class="inp" id="i_name" placeholder="Your name"></div>
+        <div class="row">
+          <div class="field"><label>Age</label><input class="inp" id="i_age" type="number" inputmode="numeric" placeholder="20"></div>
+          <div class="field"><label>Sex</label>
+            <div class="chips"><button class="chip" data-g="i_sex" data-v="male">Male</button><button class="chip" data-g="i_sex" data-v="female">Female</button></div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="field"><label>Height</label><div class="row" style="gap:6px"><input class="inp" id="i_ft" type="number" inputmode="numeric" placeholder="ft"><input class="inp" id="i_in" type="number" inputmode="numeric" placeholder="in"></div></div>
+          <div class="field"><label>Weight (lb)</label><input class="inp" id="i_wt" type="number" inputmode="decimal" placeholder="180"></div>
+        </div>
+      </div>
+
+      <!-- 2: goal -->
+      <div class="onb-step" data-step="2">
+        <h2>What's the goal?</h2>
+        <p class="lead">This sets your calorie target and how I program your training.</p>
+        <div class="chips" style="flex-direction:column">
+          <button class="chip" data-g="i_goal" data-v="bulk" style="text-align:left;padding:18px"><b style="display:block;font-size:16px">Build muscle (Bulk)</b><span style="font-weight:500;color:var(--txt2);font-size:13px">Calorie surplus, high protein, hypertrophy focus</span></button>
+          <button class="chip" data-g="i_goal" data-v="cut" style="text-align:left;padding:18px"><b style="display:block;font-size:16px">Lose fat (Cut)</b><span style="font-weight:500;color:var(--txt2);font-size:13px">Calorie deficit, keep protein high to hold muscle</span></button>
+          <button class="chip" data-g="i_goal" data-v="maintain" style="text-align:left;padding:18px"><b style="display:block;font-size:16px">Maintain / Recomp</b><span style="font-weight:500;color:var(--txt2);font-size:13px">Eat at maintenance, get stronger</span></button>
+        </div>
+      </div>
+
+      <!-- 3: body fat -->
+      <div class="onb-step" data-step="3">
+        <h2>What's your body fat level?</h2>
+        <p class="lead">Use a visual assessment — don't worry about being too precise.</p>
+        <div class="bf-grid" id="bfGrid"></div>
+      </div>
+
+      <!-- 4: equipment -->
+      <div class="onb-step" data-step="4">
+        <h2>Your gym</h2>
+        <p class="lead">Pick everything you can train with — gym gear or stuff around the house. I'll only ever program what you actually have.</p>
+        <div id="equipCats"></div>
+        <button class="btn ghost sm" style="width:100%;margin-top:8px" onclick="addCustomEquip()">+ Add custom equipment</button>
+      </div>
+
+      <!-- 5: weights owned -->
+      <div class="onb-step" data-step="5">
+        <h2>Weights you own</h2>
+        <p class="lead">Tap every weight you have. I'll never tell you to grab one that isn't in your rack.</p>
+        <div id="weightSection"></div>
+      </div>
+
+      <!-- 6: schedule + experience -->
+      <div class="onb-step" data-step="6">
+        <h2>A few coaching questions</h2>
+        <p class="lead">Same questions a good coach asks on day one. These genuinely shape your program.</p>
+        <div class="field"><label>Days per week you can train</label>
+          <div class="chips" id="daysChips" style="flex-wrap:wrap"></div></div>
+        <div class="field"><label>Average time per workout</label>
+          <div class="chips" style="flex-wrap:wrap">
+            <button class="chip" data-g="i_dur" data-v="30">~30 min</button>
+            <button class="chip" data-g="i_dur" data-v="45">~45 min</button>
+            <button class="chip" data-g="i_dur" data-v="60">~60 min</button>
+            <button class="chip" data-g="i_dur" data-v="90">90+ min</button>
+          </div></div>
+        <div class="field"><label>How long have you been lifting?</label>
+          <div class="chips" style="flex-wrap:wrap">
+            <button class="chip" data-g="i_exp" data-v="new">&lt; 6 months</button>
+            <button class="chip" data-g="i_exp" data-v="some">6mo – 2yr</button>
+            <button class="chip" data-g="i_exp" data-v="exp">2yr+</button>
+          </div></div>
+        <div class="field"><label>How long should this program run?</label>
+          <div class="chips" id="lenChips" style="flex-wrap:wrap"></div></div>
+        <div class="field"><label>Any injuries or problem areas? (optional)</label>
+          <input class="inp" id="i_injury" placeholder="e.g. bad left shoulder, sore knees"></div>
+        <div class="field"><label>Exercises you hate? (optional)</label>
+          <input class="inp" id="i_hate" placeholder="e.g. burpees, barbell rows"></div>
+      </div>
+
+      <!-- 7: muscle priority -->
+      <div class="onb-step" data-step="7">
+        <h2>Anything you want to grow?</h2>
+        <p class="lead">Pick a few muscles to prioritize and I'll add extra volume there. Skip if you just want balanced growth.</p>
+        <div class="chips" id="priorityChips" style="flex-wrap:wrap"></div>
+      </div>
+
+      <!-- 8: strength assessment -->
+      <div class="onb-step" data-step="8">
+        <h2>Strength check</h2>
+        <p class="lead">Enter what you can lift now and I'll rank each muscle. Never done a lift? Tap "I don't know" — I'll start you light there.</p>
+        <div id="assessList"></div>
+      </div>
+
+      <!-- 9: building -->
+      <div class="onb-step" data-step="9">
+        <div style="text-align:center;padding-top:40px">
+          <div id="buildSpinner" style="width:70px;height:70px;border:5px solid var(--bg3);border-top-color:var(--acc);border-radius:50%;margin:0 auto 24px;animation:spin 1s linear infinite"></div>
+          <h2 id="buildTitle">Building your program</h2>
+          <p class="lead" id="buildMsg">Analyzing your strength profile…</p>
+        </div>
+      </div>
+    </div>
+    <div class="onb-foot">
+      <div class="row">
+        <button class="btn ghost" id="onbBack" style="flex:0 0 90px;display:none">Back</button>
+        <button class="btn" id="onbNext">Get Started</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ MAIN APP SCREENS ============ -->
+  <div id="s_home" class="screen"></div>
+  <div id="s_workout" class="screen"></div>
+  <div id="s_progress" class="screen"></div>
+  <div id="s_nutrition" class="screen"></div>
+  <div id="s_body" class="screen"></div>
+
+  <!-- bottom nav -->
+  <div class="nav" id="bottomNav" style="display:none">
+    <button data-nav="home" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Home</button>
+    <button data-nav="workout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6.5 6.5l11 11M21 21l-1-1M3 3l1 1M18 22l4-4M2 6l4-4M7 17l-2.5 2.5M17 7l2.5-2.5"/></svg>Train</button>
+    <button data-nav="progress"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 3v18h18M7 14l4-4 3 3 5-6"/></svg>Stats</button>
+    <button data-nav="nutrition"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 2a7 7 0 0 0-7 7c0 3 2 5 2 8a5 5 0 0 0 10 0c0-3 2-5 2-8a7 7 0 0 0-7-7z"/></svg>Fuel</button>
+    <button data-nav="body"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="6" r="3"/><path d="M12 9v7M8 22l4-6 4 6M9 13h6"/></svg>Body</button>
+  </div>
+</div>
+
+<!-- rest timer -->
+<div id="restTimer">
+  <div><div class="tt" id="rtTime">1:30</div><div class="lab">Rest</div></div>
+  <button onclick="addRest(15)">+15s</button>
+  <button onclick="skipRest()">Skip</button>
+</div>
+
+<!-- generic modal -->
+<div class="modal" id="modal"><div class="modal-c"><div class="modal-grip"></div><div id="modalBody"></div></div></div>
+
+<script src="app.js"></script>
+<script>
+// register service worker for offline + install
+if('serviceWorker' in navigator){navigator.serviceWorker.register('sw.js').catch(()=>{});}
+</script>
+<style>@keyframes spin{to{transform:rotate(360deg)}}</style>
+</body>
+</html>
