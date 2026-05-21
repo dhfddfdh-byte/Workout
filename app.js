@@ -565,10 +565,11 @@ function onbNextFn(){
    ============================================================ */
 const EXLIB={
   chest:[
-    {n:'Barbell Bench Press',eq:['barbell','rack','bench'],c:'Lower bar to mid-chest, drive up. Keep shoulder blades pinned.'},
-    {n:'Dumbbell Bench Press',eq:['dumbbells','bench','flatbench'],c:'Press DBs over chest, control the stretch at bottom.'},
-    {n:'Incline Dumbbell Press',eq:['dumbbells','bench'],c:'Bench at 30°. Targets upper chest.'},
-    {n:'Dumbbell Fly',eq:['dumbbells','bench'],c:'Slight elbow bend, hug a tree motion.'},
+    {n:'Barbell Bench Press',eq:['barbell'],req:['bench','flatbench','rack'],c:'Lower bar to mid-chest, drive up. Keep shoulder blades pinned.'},
+    {n:'Dumbbell Bench Press',eq:['dumbbells'],req:['bench','flatbench'],c:'Press DBs over chest, control the stretch at bottom.'},
+    {n:'Incline Dumbbell Press',eq:['dumbbells'],req:['bench'],c:'Bench at 30°. Targets upper chest.'},
+    {n:'Dumbbell Fly',eq:['dumbbells'],req:['bench'],c:'Slight elbow bend, hug a tree motion.'},
+    {n:'Dumbbell Floor Press',eq:['dumbbells'],c:'Lying on the floor — press DBs up. No bench needed; elbows stop at the floor.'},
     {n:'Cable Crossover',eq:['cables'],c:'Squeeze chest at the bottom of the arc.'},
     {n:'Machine Chest Press',eq:['machines','pec'],c:'Press handles together, control the return.'},
     {n:'Push-up',eq:['bodyweight','wall'],c:'Body in a straight line, full range.'},
@@ -648,11 +649,13 @@ const EXLIB={
     {n:'Towel Iso Curl',eq:['towel','doorbar'],c:'Curl against a towel anchored under your feet.'}
   ],
   triceps:[
-    {n:'Close-Grip Bench',eq:['barbell','rack','bench'],c:'Tuck elbows, press, tricep focus.'},
+    {n:'Close-Grip Bench',eq:['barbell'],req:['bench','flatbench','rack'],c:'Tuck elbows, press, tricep focus.'},
+    {n:'Close-Grip Floor Press',eq:['barbell','dumbbells'],c:'Lying on the floor, elbows tucked — tricep press with no bench.'},
     {n:'Tricep Pushdown',eq:['cables'],c:'Elbows fixed, full extension.'},
     {n:'Overhead Tricep Ext',eq:['dumbbells','kettlebell'],c:'Lower weight behind head, extend.'},
     {n:'Dips',eq:['bodyweight','pullup','dip','chair','counter','parallettes'],c:'Lean slightly, full depth on bars/chairs/counter.'},
-    {n:'Skull Crusher',eq:['dumbbells','barbell','ezbar','bench'],c:'Lower to forehead, extend.'},
+    {n:'Skull Crusher',eq:['dumbbells','barbell','ezbar'],req:['bench','flatbench'],c:'Lower to forehead, extend.'},
+    {n:'Floor Skull Crusher',eq:['dumbbells','ezbar'],c:'On the floor — lower toward forehead, extend. No bench needed.'},
     {n:'Diamond Push-up',eq:['bodyweight'],c:'Hands together, elbows tucked.'},
     {n:'Narrow Push-up (board)',eq:['pushupboard','pushuphandles'],c:'Narrow hand position — tricep emphasis.'},
     {n:'Banded Pushdown',eq:['bands'],c:'Anchor high, push down, lock out.'}
@@ -686,6 +689,7 @@ function pickExercise(muscle,exclude,variantSeed){
   const injured=(S.profile.injuries||'').toLowerCase();
   const list=(EXLIB[muscle]||[]).filter(x=>
     x.eq.some(e=>eq.includes(e)) &&
+    (!x.req || x.req.some(r=>eq.includes(r))) &&   // needs at least one of req (e.g. a bench)
     !hated.some(h=>x.n.toLowerCase().includes(h)) &&
     !(exclude&&exclude.has(x.n))
   );
@@ -697,11 +701,17 @@ function pickExercise(muscle,exclude,variantSeed){
     return true;
   });
   const pool=safe.length?safe:list;
-  if(!pool.length)return (EXLIB[muscle]||[])[0];
-  // rotate by a seed (e.g. the day index) so the same muscle gets a different
-  // movement on different days instead of the identical lift every time
-  const i=((variantSeed||0)%pool.length+pool.length)%pool.length;
-  return pool[i];
+  if(pool.length){
+    // rotate by a seed (e.g. the day index) so the same muscle gets a different
+    // movement on different days instead of the identical lift every time
+    const i=((variantSeed||0)%pool.length+pool.length)%pool.length;
+    return pool[i];
+  }
+  // last-resort fallback: the first library move the user can ACTUALLY do
+  // (respects equipment + req), so we never hand back a bench move with no bench
+  const doable=(EXLIB[muscle]||[]).find(x=>
+    x.eq.some(e=>eq.includes(e)) && (!x.req||x.req.some(r=>eq.includes(r))));
+  return doable||null;
 }
 
 /* ---------- weights snapping to what you actually own ----------
@@ -1227,11 +1237,33 @@ function openCoachChat(){
   if(!S.settings.geminiKey){modal(`<h3>💬 Coach Chat</h3><p style="color:var(--txt2);line-height:1.5">Add your free Gemini key in Settings → AI to chat with your coach. Then you can ask things like "this exercise left me out of breath" or "how do I lose face fat" and attach a photo.</p><button class="btn" style="margin-top:16px" onclick="closeModal();openSettings()">Open Settings</button>`);return;}
   renderCoachChat();
 }
+// renders the apply button for a coach action (change/swap/add/remove)
+function actionButton(a,mi,ai){
+  const done=a.done?' ✓ done':'';
+  const dis=a.done?'opacity:.5':'';
+  let label;
+  if(a.kind==='change')label=`Set ${a.name} → ${a.weight}lb`;
+  else if(a.kind==='swap')label=`Swap ${a.name} → ${a.to}`;
+  else if(a.kind==='add')label=`Add ${a.to}`;
+  else if(a.kind==='remove')label=`Remove ${a.name}`;
+  else return '';
+  return `<div style="margin-top:6px"><button class="btn sm" style="font-size:12px;padding:7px 12px;${dis}" ${a.done?'disabled':''} onclick="runCoachAction(${mi},${ai})">✓ ${label}${done}</button></div>`;
+}
+function runCoachAction(mi,ai){
+  const a=coachChatLog[mi]&&coachChatLog[mi].actions&&coachChatLog[mi].actions[ai];
+  if(!a||a.done)return;
+  if(a.kind==='change')applyCoachChange(a.name,a.weight);
+  else if(a.kind==='swap')applyCoachSwap(a.name,a.to);
+  else if(a.kind==='add')applyCoachAdd(a.muscle,a.to);
+  else if(a.kind==='remove')applyCoachRemove(a.name);
+  a.done=true;
+  renderCoachChat();
+}
 function renderCoachChat(){
   const msgs=coachChatLog.map((m,mi)=>m.role==='user'
     ?`<div style="text-align:right;margin:8px 0"><span style="display:inline-block;background:var(--acc);color:#0a0a0b;padding:9px 13px;border-radius:14px 14px 4px 14px;font-weight:600;max-width:85%;text-align:left">${m.text}${m.img?' 📷':''}</span></div>`
-    :`<div style="margin:8px 0"><span style="display:inline-block;background:var(--card2);padding:9px 13px;border-radius:14px 14px 14px 4px;max-width:85%">${m.text.replace(/\n/g,'<br>')}</span>${m.changes?m.changes.map(c=>`<div style="margin-top:6px"><button class="btn sm" style="font-size:12px;padding:7px 12px" onclick="applyCoachChange('${c.name.replace(/'/g,"")}',${c.weight})">✓ Set ${c.name} to ${c.weight}lb</button></div>`).join(''):''}</div>`
-  ).join('')||'<p class="small" style="text-align:center;padding:20px">Talk to your coach like a real person — "this left me out of breath", "my shoulder feels off on press", "is this weight too light?". Attach a photo for form or physique feedback. If the advice means changing a weight, you\'ll get a button to apply it.</p>';
+    :`<div style="margin:8px 0"><span style="display:inline-block;background:var(--card2);padding:9px 13px;border-radius:14px 14px 14px 4px;max-width:85%">${m.text.replace(/\n/g,'<br>')}</span>${m.actions?m.actions.map((a,ai)=>actionButton(a,mi,ai)).join(''):''}</div>`
+  ).join('')||'<p class="small" style="text-align:center;padding:20px">Talk to your coach like a real person — "this left me out of breath", "I don\'t have a bench", "my shoulder feels off", "give me an extra ab move". Attach a photo for form or physique feedback. When the advice means changing your plan, you\'ll get a button to apply it.</p>';
   modal(`<h3>💬 Coach Chat</h3>
     <div id="chatScroll" style="max-height:46vh;overflow-y:auto;margin-bottom:12px">${msgs}</div>
     <div id="chatImgPreview"></div>
@@ -1259,22 +1291,65 @@ async function sendCoachChat(){
   coachChatLog.push({role:'coach',text:'…thinking'});renderCoachChat();
   // give the coach the current program so its advice is specific to their lifts
   const prog=S.program?S.program.split.map(d=>d.name+': '+d.exercises.filter(e=>!e.warmup&&!e.cardio).map(e=>`${e.name} ${e.weight!=null?e.weight+'lb':'bodyweight'}×${e.reps}`).join(', ')).join(' | '):'no program yet';
+  // exercises they can actually do with their gear (so swaps/adds are realistic)
+  const canDo=availableExerciseNames();
   const history=coachChatLog.slice(-7,-1).map(m=>`${m.role==='user'?'Client':'You'}: ${m.text}`).join('\n');
   const ctx=`${history?history+'\n':''}Client just said: "${text}".
 
 Their profile: ${S.profile.age}yo ${S.profile.sex}, ${S.profile.weight}lb, goal=${S.profile.goal}, experience=${S.profile.experience}.
+Their gym: ${(S.profile.equipment||[]).join(', ')||'bodyweight only'}${S.profile.barbellMax?` (barbell loads up to ${S.profile.barbellMax}lb)`:''}.
 Their current program: ${prog}.
+Exercises they CAN do with their equipment: ${canDo.join(', ')}.
 
-Reply as their coach (human, conversational, 2-4 sentences). If they're describing how an exercise felt (out of breath, too easy, too hard, painful), react like a coach would and tell them what to do about it.
+Reply as their coach (human, conversational, 2-4 sentences). React like a real coach to how things felt or what they're missing, and tell them what to do.
 
-AFTER your reply, if your advice implies a concrete change to a specific exercise's weight, append on a NEW LINE exactly: [[CHANGE:exercise name|newWeightInLb]] (use the closest exercise name from their program; omit this line entirely if no specific weight change applies). Example: [[CHANGE:Barbell Bench Press|95]]`;
+IMPORTANT — when your advice means actually editing their program, append the matching directive(s) on their OWN new line at the very end. Only use exercise names from the "CAN do" list for new exercises. Use the exact current name from their program for the old/removed one. Omit all directives if none apply.
+- Change a weight: [[CHANGE:exercise name|newWeightLb]]
+- Swap one exercise for another: [[SWAP:current exercise|new exercise]]
+- Add an exercise: [[ADD:muscle|new exercise]]  (muscle one of: chest,back,quads,hamstrings,glutes,frontDelt,sideDelt,rearDelt,biceps,triceps,forearms,abs,calves)
+- Remove an exercise: [[REMOVE:exercise name]]
+Examples: [[SWAP:Barbell Bench Press|Push-up]]   [[ADD:abs|Plank]]   [[REMOVE:Standing Calf Raise]]`;
   try{
     const raw=await geminiCall(ctx,img);
-    // pull out any change directive
-    const changes=[];const clean=(raw||'').replace(/\[\[CHANGE:([^|\]]+)\|(\d+(?:\.\d+)?)\]\]/g,(m,name,w)=>{changes.push({name:name.trim(),weight:+w});return '';}).trim();
-    coachChatLog[coachChatLog.length-1]={role:'coach',text:clean||'Got it.',changes:changes.length?changes:null};
+    // pull out any directives
+    const actions=[];
+    let clean=(raw||'')
+      .replace(/\[\[CHANGE:([^|\]]+)\|(\d+(?:\.\d+)?)\]\]/g,(m,name,w)=>{actions.push({kind:'change',name:name.trim(),weight:+w});return '';})
+      .replace(/\[\[SWAP:([^|\]]+)\|([^\]]+)\]\]/g,(m,oldN,newN)=>{actions.push({kind:'swap',name:oldN.trim(),to:newN.trim()});return '';})
+      .replace(/\[\[ADD:([^|\]]+)\|([^\]]+)\]\]/g,(m,mus,newN)=>{actions.push({kind:'add',muscle:mus.trim(),to:newN.trim()});return '';})
+      .replace(/\[\[REMOVE:([^\]]+)\]\]/g,(m,name)=>{actions.push({kind:'remove',name:name.trim()});return '';})
+      .trim();
+    coachChatLog[coachChatLog.length-1]={role:'coach',text:clean||'Got it.',actions:actions.length?actions:null};
   }catch(e){coachChatLog[coachChatLog.length-1]={role:'coach',text:aiErrorMsg(e)};}
   renderCoachChat();
+}
+// every exercise name the user can actually perform with their current equipment
+function availableExerciseNames(){
+  const eq=(S.profile.equipment||[]).concat('bodyweight');
+  const hated=(S.profile.hated||'').toLowerCase().split(/[,;]/).map(h=>h.trim()).filter(Boolean);
+  const out=[];
+  for(const m in EXLIB){EXLIB[m].forEach(x=>{
+    if(x.eq.some(e=>eq.includes(e)) && (!x.req||x.req.some(r=>eq.includes(r))) && !hated.some(h=>x.n.toLowerCase().includes(h)))out.push(x.n);
+  });}
+  return [...new Set(out)];
+}
+// find an exercise's library entry + which muscle it belongs to
+function findExercise(name){
+  const low=name.toLowerCase();
+  const eq=(S.profile.equipment||[]).concat('bodyweight');
+  const doable=x=> x.eq.some(e=>eq.includes(e)) && (!x.req||x.req.some(r=>eq.includes(r)));
+  // exact match — prefer a doable one if there are duplicates
+  let exactDoable=null, exactAny=null;
+  for(const m in EXLIB){for(const x of EXLIB[m]){
+    if(x.n.toLowerCase()===low){ if(doable(x))return {ex:x,muscle:m}; exactAny=exactAny||{ex:x,muscle:m}; }
+  }}
+  if(exactAny)return exactAny;
+  // fuzzy contains — again prefer doable
+  for(const m in EXLIB){for(const x of EXLIB[m]){
+    if((x.n.toLowerCase().includes(low)||low.includes(x.n.toLowerCase())) && doable(x))return {ex:x,muscle:m};
+  }}
+  for(const m in EXLIB){const hit=EXLIB[m].find(x=>x.n.toLowerCase().includes(low)||low.includes(x.n.toLowerCase()));if(hit)return {ex:hit,muscle:m};}
+  return null;
 }
 // apply a coach-suggested weight change into the live program
 function applyCoachChange(name,weight){
@@ -1289,6 +1364,56 @@ function applyCoachChange(name,weight){
   }
   save();
   toast(hit?`Updated ${name} to ${weight}lb`:'Could not find that exercise','good');
+  if($('#s_workout'))try{renderWorkout();}catch(e){}
+}
+// swap an exercise for a different one everywhere it appears
+function applyCoachSwap(oldName,newName){
+  if(!S.program)return;
+  const found=findExercise(newName);
+  if(!found){toast('Could not find '+newName,'bad');return;}
+  let hit=0;
+  S.program.split.forEach(d=>d.exercises.forEach((e,i)=>{
+    if(!e.warmup&&!e.cardio && (e.name.toLowerCase()===oldName.toLowerCase()||e.name.toLowerCase().includes(oldName.toLowerCase().split(' ')[0]))){
+      const reps=e.reps;
+      d.exercises[i]={name:found.ex.n,muscle:found.muscle,cue:found.ex.c,
+        sets:e.sets,reps,weight:suggestStartWeight(found.ex,found.muscle,reps),
+        rest:e.rest,priority:e.priority};
+      hit++;
+    }
+  }));
+  save();
+  toast(hit?`Swapped to ${found.ex.n}`:'Could not find that exercise','good');
+  if($('#s_workout'))try{renderWorkout();}catch(e){}
+}
+// add a new exercise to the day(s) that train the given muscle
+function applyCoachAdd(muscle,newName){
+  if(!S.program)return;
+  const found=findExercise(newName);
+  if(!found){toast('Could not find '+newName,'bad');return;}
+  const reps=repsForMuscle(found.muscle,S.program.scheme.reps);
+  const newEx={name:found.ex.n,muscle:found.muscle,cue:found.ex.c,
+    sets:S.program.scheme.sets,reps,weight:suggestStartWeight(found.ex,found.muscle,reps),
+    rest:S.program.scheme.rest,priority:false};
+  // add to the first day that already trains this muscle, else the first day
+  let target=S.program.split.find(d=>d.exercises.some(e=>e.muscle===found.muscle&&!e.warmup))||S.program.split[0];
+  // insert before any cardio finisher
+  const ci=target.exercises.findIndex(e=>e.cardio);
+  if(ci>=0)target.exercises.splice(ci,0,newEx); else target.exercises.push(newEx);
+  save();
+  toast(`Added ${found.ex.n} to ${target.name}`,'good');
+  if($('#s_workout'))try{renderWorkout();}catch(e){}
+}
+// remove an exercise from the program
+function applyCoachRemove(name){
+  if(!S.program)return;
+  let hit=0;
+  S.program.split.forEach(d=>{
+    const before=d.exercises.length;
+    d.exercises=d.exercises.filter(e=>e.warmup||e.cardio||!(e.name.toLowerCase()===name.toLowerCase()||e.name.toLowerCase().includes(name.toLowerCase().split(' ')[0])));
+    hit+=before-d.exercises.length;
+  });
+  save();
+  toast(hit?`Removed ${name}`:'Could not find that exercise','good');
   if($('#s_workout'))try{renderWorkout();}catch(e){}
 }
 
@@ -1353,6 +1478,17 @@ function renderWorkout(){
   let workout=tw&&!tw.rest?tw:null;
   // if active session exists, resume it; else allow choosing day
   if(S.active){return renderActiveSession();}
+  // no program yet (interrupted onboarding) — offer to build one
+  if(!S.program||!S.program.split){
+    $('#s_workout').innerHTML=`<div class="page"><div class="topbar"><div><div class="sub">Training</div><h1>Workout</h1></div></div>
+      <div class="card" style="text-align:center;padding:28px">
+        <div style="font-size:30px">🏗️</div>
+        <div class="disp" style="font-size:20px;margin-top:6px">No program yet</div>
+        <p class="small" style="margin-top:6px">Let's build your training plan from your profile.</p>
+        <button class="btn" style="margin-top:14px" onclick="S.program=buildLocalProgram();save();renderWorkout();">Build My Program</button>
+      </div></div>`;
+    return;
+  }
   let h=`<div class="page"><div class="topbar"><div><div class="sub">Training</div><h1>Workout</h1></div></div>`;
 
   // day selector
@@ -2105,10 +2241,46 @@ function openSettings(){
     <div class="divider"></div>
     <div class="field"><label>Goal</label><div class="chips">
       ${['bulk','cut','maintain'].map(g=>`<button class="chip ${S.profile.goal===g?'on':''}" onclick="changeGoal('${g}')">${g[0].toUpperCase()+g.slice(1)}</button>`).join('')}</div></div>
+    <div class="field"><label>Equipment & program</label>
+      <button class="btn ghost" onclick="editEquipment()">Edit my equipment</button>
+      <button class="btn ghost" style="margin-top:8px" onclick="rebuildProgramPrompt()">Rebuild my program</button>
+      <p class="small" style="margin-top:8px">Rebuild after changing equipment or goal — it re-picks every exercise for the gear you actually have (e.g. no bench → push-ups instead of barbell bench).</p></div>
     <button class="btn" onclick="saveSettings()">Save</button>
     <button class="btn ghost" style="margin-top:10px" onclick="exportData()">Export my data</button>
     <button class="btn ghost" style="margin-top:10px;color:var(--red)" onclick="resetApp()">Reset everything</button>
     <p class="small" style="text-align:center;margin-top:16px">FORGE · all data stored locally on your device</p>`);
+}
+// Edit equipment after onboarding, then offer a rebuild.
+function editEquipment(){
+  const selected=new Set(S.profile.equipment||[]);
+  let h=`<h3>Your equipment</h3><p style="color:var(--txt2);margin-bottom:12px">Tap to toggle. If you don't have a bench, leave it off and I'll never program flat barbell pressing.</p><div style="max-height:50vh;overflow-y:auto">`;
+  EQUIP_CATS.forEach(cat=>{
+    h+=`<div class="eq-cat"><div class="ct">${cat.cat}</div><div class="chips">`;
+    cat.items.forEach(it=>{h+=`<button class="chip multi${selected.has(it.id)?' on':''}" data-eqedit="${it.id}" onclick="this.classList.toggle('on')">${it.n}</button>`;});
+    h+=`</div></div>`;
+  });
+  h+=`</div><button class="btn" style="margin-top:14px" onclick="saveEquipmentEdit()">Save equipment</button>
+    <button class="btn ghost" style="margin-top:10px" onclick="openSettings()">Back</button>`;
+  modal(h);
+}
+function saveEquipmentEdit(){
+  S.profile.equipment=$$('[data-eqedit].on').map(b=>b.dataset.eqedit);
+  save();closeModal();
+  modal(`<h3>Equipment saved</h3><p style="color:var(--txt2);line-height:1.5">Want me to rebuild your program around your updated gear now? Your logged workouts and stats stay.</p>
+    <button class="btn" style="margin-top:14px" onclick="doRebuild()">Rebuild program</button>
+    <button class="btn ghost" style="margin-top:10px" onclick="closeModal()">Not now</button>`);
+}
+function rebuildProgramPrompt(){
+  modal(`<h3>Rebuild program?</h3><p style="color:var(--txt2);line-height:1.5">I'll re-pick every exercise for your current equipment, goal, and strength. Your history, PRs, and food log are untouched — only the upcoming workouts change.</p>
+    <button class="btn" style="margin-top:14px" onclick="doRebuild()">Rebuild now</button>
+    <button class="btn ghost" style="margin-top:10px" onclick="closeModal()">Cancel</button>`);
+}
+function doRebuild(){
+  S.program=buildLocalProgram();
+  S.nutrition.plan=buildLocalMeals();
+  save();closeModal();
+  toast('Program rebuilt for your gear','good');
+  go('workout');
 }
 function changeGoal(g){S.profile.goal=g;S.nutrition.plan=buildLocalMeals();save();openSettings();}
 function saveSettings(){S.settings.geminiKey=$('#set_key').value.trim();save();closeModal();toast('Saved','good');if(current==='home')renderHome();}
