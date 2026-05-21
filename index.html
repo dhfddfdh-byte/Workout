@@ -341,8 +341,12 @@ img{display:block;max-width:100%}
       <div class="onb-step" data-step="4">
         <h2>Your gym</h2>
         <p class="lead">Pick everything you can train with — gym gear or stuff around the house. I'll only ever program what you actually have.</p>
+        <div class="chips" id="presetChips" style="flex-wrap:wrap;margin-bottom:16px"></div>
         <div id="equipCats"></div>
-        <button class="btn ghost sm" style="width:100%;margin-top:8px" onclick="addCustomEquip()">+ Add custom equipment</button>
+        <div class="row" style="gap:8px">
+          <button class="btn ghost sm" style="flex:1" onclick="addCustomEquip()">+ Add custom</button>
+          <button class="btn ghost sm" style="flex:1" onclick="linkEquipment()">🔗 Paste a link</button>
+        </div>
       </div>
 
       <!-- 5: weights owned -->

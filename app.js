@@ -59,7 +59,7 @@ function ageFactor(age){
   if(age<=55) return 0.94 - (age-40)*0.008;
   return Math.max(0.65, 0.82 - (age-55)*0.009);
 }
-function epley1RM(w,reps){return reps<=1?w:Math.round(w*(1+reps/30));}
+function epley1RM(w,reps){const r=Math.min(+reps||1,12);return r<=1?w:Math.round(w*(1+r/30));}
 // Given a lift name + estimated 1RM, return {tier, idx, pct, next}
 function rankLift(lift, oneRM){
   const p=S.profile, bw=+p.weight||180;
@@ -120,62 +120,101 @@ function macroTarget(){
    Definition (abs/separation) fades out and the midsection
    widens/softens as body fat climbs, like a real BF chart.
    ============================================================ */
-// 9 levels, each: torso shoulder width, waist width, ab-detail opacity, label, cue
+// 9 levels: sh=shoulder half-width, wa=waist half-width, abs=detail strength 0..1
 const BF_LEVELS=[
-  {pct:'3-4%',  sh:42, wa:26, abs:1.0, vasc:1, cue:'Striated, vascular, paper-thin skin'},
-  {pct:'5-7%',  sh:42, wa:27, abs:0.95,vasc:.7,cue:'Full 6-pack, sharp separation'},
-  {pct:'8-12%', sh:42, wa:29, abs:0.8, vasc:.3,cue:'Abs clearly visible, lean'},
-  {pct:'13-17%',sh:42, wa:32, abs:0.55,vasc:0, cue:'Top abs show, athletic'},
-  {pct:'18-23%',sh:42, wa:35, abs:0.3, vasc:0, cue:'Flat, faint outline only'},
-  {pct:'24-29%',sh:43, wa:39, abs:0.12,vasc:0, cue:'No definition, soft midsection'},
-  {pct:'30-34%',sh:44, wa:44, abs:0,   vasc:0, cue:'Rounder belly, fuller waist'},
-  {pct:'35-39%',sh:46, wa:50, abs:0,   vasc:0, cue:'Belly protrudes, soft chest'},
-  {pct:'40%+',  sh:48, wa:57, abs:0,   vasc:0, cue:'Large midsection, little shape'}
+  {pct:'3-4%',  sh:40, wa:22, abs:1.0, vasc:1, cue:'Striated, vascular, paper-thin skin'},
+  {pct:'5-7%',  sh:40, wa:23, abs:0.92,vasc:.6,cue:'Full 6-pack, sharp separation'},
+  {pct:'8-12%', sh:39, wa:25, abs:0.78,vasc:.2,cue:'Abs clearly visible, lean'},
+  {pct:'13-17%',sh:38, wa:28, abs:0.52,vasc:0, cue:'Top abs show, athletic'},
+  {pct:'18-23%',sh:38, wa:31, abs:0.28,vasc:0, cue:'Flat, faint outline only'},
+  {pct:'24-29%',sh:38, wa:35, abs:0.10,vasc:0, cue:'No definition, soft midsection'},
+  {pct:'30-34%',sh:39, wa:40, abs:0,   vasc:0, cue:'Rounder belly, fuller waist'},
+  {pct:'35-39%',sh:40, wa:45, abs:0,   vasc:0, cue:'Belly protrudes, soft chest'},
+  {pct:'40%+',  sh:42, wa:51, abs:0,   vasc:0, cue:'Large midsection, little shape'}
 ];
 function bodySVG(L,female){
-  const cx=60, topY=44, botY=150;
-  const sh=L.sh, wa=L.wa;
-  const skin='#9aa0aa', shade='#7e848e', line='#5d626b';
-  // torso outline: shoulders -> waist, with a slight belly bulge at higher BF
-  const belly = wa>40 ? (wa-38)*0.7 : 0;
-  const wEff = wa + belly;
-  const lx=cx-sh, rx=cx+sh, lw=cx-wEff, rw=cx+wEff;
-  const path=`M${lx} ${topY}
-    Q${cx} ${topY-9} ${rx} ${topY}
-    C${rx+4} ${topY+34} ${rw+belly} ${botY-46} ${rw} ${botY}
-    Q${cx} ${botY+8} ${lw} ${botY}
-    C${lw-belly} ${botY-46} ${lx-4} ${topY+34} ${lx} ${topY} Z`;
-  // pecs
-  const pecY=topY+24;
-  const pecs=`<path d="M${cx-4} ${pecY-6} Q${cx-sh+8} ${pecY-4} ${cx-sh+10} ${pecY+12} Q${cx-sh+18} ${pecY+20} ${cx-4} ${pecY+16} Z" fill="${shade}" opacity="${female?0.25:0.5}"/>
-    <path d="M${cx+4} ${pecY-6} Q${cx+sh-8} ${pecY-4} ${cx+sh-10} ${pecY+12} Q${cx+sh-18} ${pecY+20} ${cx+4} ${pecY+16} Z" fill="${shade}" opacity="${female?0.25:0.5}"/>`;
-  // abs grid (opacity by leanness)
-  let abs='';
-  if(L.abs>0){
-    const ax=cx, ay=pecY+22, aw=11, ah=9;
-    for(let r=0;r<3;r++){
-      abs+=`<rect x="${ax-aw-2}" y="${ay+r*ah}" width="${aw}" height="${ah-2}" rx="2" fill="${shade}" opacity="${L.abs*0.55}"/>`;
-      abs+=`<rect x="${ax+2}"    y="${ay+r*ah}" width="${aw}" height="${ah-2}" rx="2" fill="${shade}" opacity="${L.abs*0.55}"/>`;
-    }
-    abs+=`<line x1="${cx}" y1="${pecY+18}" x2="${cx}" y2="${ay+3*ah}" stroke="${line}" stroke-width="1.5" opacity="${L.abs*0.7}"/>`;
+  // Front-facing torso illustration modeled on a real body-fat reference chart.
+  // Low BF = broad shoulders, deep V-taper, hard ab grid, serratus + vascularity.
+  // High BF = the waist/belly rounds out into a barrel, all detail fades, pecs soften.
+  // viewBox 0 0 130 168.  Arms hang at the sides leaving dark cutout gaps.
+  const id='bf'+Math.round(L.wa*10)+(L.abs*100|0);
+  const skin='#c2c6cd', skinHi='#d2d6dc', edge='#7e828b', det='#5f636c', shadow='#9a9ea6';
+  const cx=65, def=L.abs;                       // def 0..1 = how visible the muscle detail is
+  const shoulder=L.sh+4, waist=L.wa;            // widths
+  const neckY=18, shY=36, ribY=86, navelY=120, hipY=150;
+  // belly bulge grows with fat; widest point sinks toward the navel
+  const gut = waist>34 ? (waist-32)*0.7 : 0;
+  const wRib = waist + gut*0.35;                // ribcage width
+  const wNav = waist + gut;                     // belly width (widest when fat)
+  // ---- torso silhouette ----
+  const torso=`M${cx-11} ${neckY}
+    C${cx-16} ${neckY+5} ${cx-shoulder+7} ${shY-6} ${cx-shoulder} ${shY+8}
+    C${cx-shoulder+2} ${shY+24} ${cx-wRib-2} ${ribY-14} ${cx-wRib} ${ribY}
+    C${cx-wRib-1} ${ribY+16} ${cx-wNav-1} ${navelY-12} ${cx-wNav} ${navelY}
+    C${cx-wNav+1} ${navelY+16} ${cx-waist+4} ${hipY-6} ${cx-waist+12} ${hipY}
+    L${cx+waist-12} ${hipY}
+    C${cx+waist-4} ${hipY-6} ${cx+wNav-1} ${navelY+16} ${cx+wNav} ${navelY}
+    C${cx+wNav+1} ${navelY-12} ${cx+wRib+1} ${ribY+16} ${cx+wRib} ${ribY}
+    C${cx+wRib+2} ${ribY-14} ${cx+shoulder-2} ${shY+24} ${cx+shoulder} ${shY+8}
+    C${cx+shoulder-7} ${shY-6} ${cx+16} ${neckY+5} ${cx+11} ${neckY} Z`;
+  // ---- upper arms hanging at the sides (separate = dark gap shows through) ----
+  const armW=14;
+  const armL=`M${cx-shoulder-1} ${shY+6}
+    C${cx-shoulder-armW} ${shY+20} ${cx-shoulder-armW+2} ${ribY-6} ${cx-wRib-9} ${navelY-6}
+    l9 3 C${cx-shoulder+4} ${ribY-8} ${cx-shoulder+5} ${shY+22} ${cx-shoulder+4} ${shY+9} Z`;
+  const armR=`M${cx+shoulder+1} ${shY+6}
+    C${cx+shoulder+armW} ${shY+20} ${cx+shoulder+armW-2} ${ribY-6} ${cx+wRib+9} ${navelY-6}
+    l-9 3 C${cx+shoulder-4} ${ribY-8} ${cx+shoulder-5} ${shY+22} ${cx+shoulder-4} ${shY+9} Z`;
+  const neck=`<path d="M${cx-9} ${neckY-12} q9 5 18 0 l1 12 q-10 5 -20 0 Z" fill="${skin}" stroke="${edge}" stroke-width="0.8"/>`;
+  // ---- muscle / fat detail (opacity scales with def) ----
+  let detail='';
+  const o=v=>Math.max(0,Math.min(1,v)).toFixed(2);
+  // deltoid caps
+  detail+=`<path d="M${cx-shoulder+2} ${shY+4} a11 11 0 0 1 11 6" stroke="${det}" stroke-width="1.2" fill="none" opacity="${o(0.35+def*0.4)}"/>`;
+  detail+=`<path d="M${cx+shoulder-2} ${shY+4} a11 11 0 0 0 -11 6" stroke="${det}" stroke-width="1.2" fill="none" opacity="${o(0.35+def*0.4)}"/>`;
+  // pecs: two masses, cleavage line down the middle, shadow under each
+  const pecB=shY+34;
+  detail+=`<path d="M${cx} ${shY+13} V${pecB-2}" stroke="${det}" stroke-width="1.5" opacity="${o(0.3+def*0.6)}"/>`;
+  detail+=`<path d="M${cx-wRib+9} ${pecB-2} Q${cx-13} ${pecB+8} ${cx-2} ${pecB-2}" stroke="${det}" stroke-width="1.8" fill="none" opacity="${o(0.35+def*0.5)}"/>`;
+  detail+=`<path d="M${cx+wRib-9} ${pecB-2} Q${cx+13} ${pecB+8} ${cx+2} ${pecB-2}" stroke="${det}" stroke-width="1.8" fill="none" opacity="${o(0.35+def*0.5)}"/>`;
+  // saggy/soft pec underline at high BF
+  if(gut>6){detail+=`<path d="M${cx-wRib+8} ${pecB+2} Q${cx-13} ${pecB+14} ${cx-3} ${pecB+6}" stroke="${shadow}" stroke-width="2.4" fill="none" opacity="0.4"/>
+    <path d="M${cx+wRib-8} ${pecB+2} Q${cx+13} ${pecB+14} ${cx+3} ${pecB+6}" stroke="${shadow}" stroke-width="2.4" fill="none" opacity="0.4"/>`;}
+  // ab grid: linea alba + rows of cross-cuts (fade with def)
+  const abTop=pecB+6, abBot=navelY-gut*0.5-6;
+  detail+=`<path d="M${cx} ${abTop} V${abBot}" stroke="${det}" stroke-width="1.4" opacity="${o(def)}"/>`;
+  for(let r=1;r<=3;r++){
+    const y=abTop+(abBot-abTop)*(r/3.3);
+    const half=10-r*0.7;
+    detail+=`<path d="M${cx-half} ${y} h${half-1.5}" stroke="${det}" stroke-width="1.3" opacity="${o(def*0.95)}"/>`;
+    detail+=`<path d="M${cx+1.5} ${y} h${half-1.5}" stroke="${det}" stroke-width="1.3" opacity="${o(def*0.95)}"/>`;
   }
-  // belly shading at high BF
-  let bellyShade='';
-  if(belly>2){bellyShade=`<ellipse cx="${cx}" cy="${botY-30}" rx="${wEff-6}" ry="26" fill="${shade}" opacity="0.3"/>`;}
-  // vascularity hint
-  let vasc='';
-  if(L.vasc>0){vasc=`<path d="M${cx-sh+12} ${pecY+18} q6 10 2 24" stroke="${line}" stroke-width="1" fill="none" opacity="${L.vasc*0.5}"/>
-    <path d="M${cx+sh-12} ${pecY+18} q-6 10 -2 24" stroke="${line}" stroke-width="1" fill="none" opacity="${L.vasc*0.5}"/>`;}
-  // arms
-  const arms=`<path d="M${lx+2} ${topY+2} q-14 4 -16 30 q-1 16 4 30 l7 1 q-1 -22 7 -44 Z" fill="${skin}"/>
-    <path d="M${rx-2} ${topY+2} q14 4 16 30 q1 16 -4 30 l-7 1 q1 -22 -7 -44 Z" fill="${skin}"/>`;
-  // neck + waistband
-  const neck=`<rect x="${cx-9}" y="${topY-14}" width="18" height="18" rx="6" fill="${skin}"/>`;
-  const band=`<rect x="${lw}" y="${botY-4}" width="${rw-lw}" height="9" fill="#e7e9ec" opacity="0.9"/>`;
-  return `<svg viewBox="0 0 120 170" xmlns="http://www.w3.org/2000/svg">
-    ${arms}${neck}
-    <path d="${path}" fill="${skin}" stroke="${line}" stroke-width="1"/>
-    ${pecs}${bellyShade}${abs}${vasc}${band}
+  // oblique V-cut toward the waist (lean only)
+  detail+=`<path d="M${cx-wRib+5} ${abBot-16} Q${cx-11} ${abBot+2} ${cx-3} ${abBot+9}" stroke="${det}" stroke-width="1.3" fill="none" opacity="${o(def*0.85)}"/>`;
+  detail+=`<path d="M${cx+wRib-5} ${abBot-16} Q${cx+11} ${abBot+2} ${cx+3} ${abBot+9}" stroke="${det}" stroke-width="1.3" fill="none" opacity="${o(def*0.85)}"/>`;
+  // serratus finger-ticks (very lean only)
+  if(def>0.7){for(let i=0;i<3;i++){const y=pecB+6+i*7;
+    detail+=`<path d="M${cx-wRib+8+i*2} ${y} l5 3" stroke="${det}" stroke-width="1" opacity="${o((def-0.7)*2.5)}"/>`;
+    detail+=`<path d="M${cx+wRib-8-i*2} ${y} l-5 3" stroke="${det}" stroke-width="1" opacity="${o((def-0.7)*2.5)}"/>`;}}
+  // vascularity (extreme lean)
+  if(L.vasc>0){detail+=`<path d="M${cx-shoulder+10} ${shY+18} q5 14 1 30" stroke="${det}" stroke-width="0.8" fill="none" opacity="${o(L.vasc*0.55)}"/>
+    <path d="M${cx+shoulder-10} ${shY+18} q-5 14 -1 30" stroke="${det}" stroke-width="0.8" fill="none" opacity="${o(L.vasc*0.55)}"/>`;}
+  // navel
+  detail+=`<ellipse cx="${cx}" cy="${navelY-gut*0.4}" rx="1.6" ry="2.4" fill="${det}" opacity="0.55"/>`;
+  // soft belly rounding shadow at high BF
+  let belly='';
+  if(gut>4){belly=`<ellipse cx="${cx}" cy="${navelY-6}" rx="${wNav-7}" ry="26" fill="${shadow}" opacity="0.16"/>`;}
+  // white briefs at the very bottom
+  const bw=waist-6;
+  const briefs=`<path d="M${cx-bw} ${hipY-8} L${cx+bw} ${hipY-8} L${cx+bw-2} ${hipY-2} Q${cx} ${hipY+4} ${cx} ${hipY+14} Q${cx} ${hipY+4} ${cx-bw+2} ${hipY-2} Z" fill="#eef0f3"/>`;
+  return `<svg viewBox="0 0 130 168" xmlns="http://www.w3.org/2000/svg">
+    <defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="${skinHi}"/><stop offset="1" stop-color="${skin}"/></linearGradient></defs>
+    ${neck}
+    <path d="${armL}" fill="url(#${id})" stroke="${edge}" stroke-width="0.8"/>
+    <path d="${armR}" fill="url(#${id})" stroke="${edge}" stroke-width="0.8"/>
+    <path d="${torso}" fill="url(#${id})" stroke="${edge}" stroke-width="1"/>
+    ${belly}${detail}${briefs}
   </svg>`;
 }
 function renderBF(){
@@ -198,35 +237,58 @@ const EQUIP_CATS=[
   {cat:'Free weights', items:[
     {id:'dumbbells',n:'Dumbbells'},{id:'barbell',n:'Barbell + plates'},
     {id:'kettlebell',n:'Kettlebells'},{id:'ezbar',n:'EZ curl bar'},
-    {id:'fixedbar',n:'Fixed-weight bars'},{id:'trapbar',n:'Trap / hex bar'}
+    {id:'curlbar',n:'Curl bar'},{id:'fixedbar',n:'Fixed-weight bars'},
+    {id:'trapbar',n:'Trap / hex bar'},{id:'weightvest',n:'Weight vest'},
+    {id:'ankleweights',n:'Ankle weights'},{id:'plateloaded',n:'Plate-loaded handles'}
   ]},
   {cat:'Racks & benches', items:[
-    {id:'rack',n:'Squat rack'},{id:'bench',n:'Adjustable bench'},
-    {id:'smith',n:'Smith machine'},{id:'flatbench',n:'Flat bench'}
+    {id:'rack',n:'Squat rack'},{id:'cage',n:'Power cage'},
+    {id:'bench',n:'Adjustable bench'},{id:'flatbench',n:'Flat bench'},
+    {id:'smith',n:'Smith machine'},{id:'preacher',n:'Preacher pad'}
   ]},
   {cat:'Machines & cables', items:[
-    {id:'cables',n:'Cable machine'},{id:'machines',n:'Selectorized machines'},
-    {id:'legpress',n:'Leg press'},{id:'legcurl',n:'Leg curl / extension'},
-    {id:'latpull',n:'Lat pulldown'},{id:'pec',n:'Pec deck'}
+    {id:'cables',n:'Cable machine'},{id:'functional',n:'Functional trainer'},
+    {id:'machines',n:'Selectorized machines'},{id:'legpress',n:'Leg press'},
+    {id:'legcurl',n:'Leg curl / extension'},{id:'latpull',n:'Lat pulldown'},
+    {id:'pec',n:'Pec deck'},{id:'rowmachine',n:'Row machine'}
   ]},
   {cat:'Bars & bodyweight', items:[
-    {id:'pullup',n:'Pull-up bar'},{id:'dip',n:'Dip station'},
-    {id:'rings',n:'Gymnastic rings'},{id:'trx',n:'TRX / suspension'},
-    {id:'bodyweight',n:'Bodyweight only'},{id:'parallettes',n:'Parallettes'}
+    {id:'pullup',n:'Pull-up bar'},{id:'doorbar',n:'Doorframe pull-up bar'},
+    {id:'dip',n:'Dip station'},{id:'rings',n:'Gymnastic rings'},
+    {id:'trx',n:'TRX / suspension'},{id:'parallettes',n:'Parallettes'},
+    {id:'pushuphandles',n:'Push-up handles'},{id:'pushupboard',n:'Push-up board'},
+    {id:'dipbelt',n:'Dip belt'}
   ]},
   {cat:'Bands & accessories', items:[
     {id:'bands',n:'Resistance bands'},{id:'miniband',n:'Mini loop bands'},
-    {id:'jumprope',n:'Jump rope'},{id:'abwheel',n:'Ab wheel'},
-    {id:'medball',n:'Medicine ball'},{id:'sandbag',n:'Sandbag'}
+    {id:'tubehandles',n:'Tube bands w/ handles'},{id:'abwheel',n:'Ab wheel'},
+    {id:'medball',n:'Medicine ball'},{id:'slamball',n:'Slam ball'},
+    {id:'sandbag',n:'Sandbag'},{id:'bosu',n:'BOSU ball'},
+    {id:'stabball',n:'Stability ball'},{id:'battleropes',n:'Battle ropes'},
+    {id:'plyobox',n:'Plyo box'},{id:'foamroller',n:'Foam roller'},
+    {id:'landmine',n:'Landmine'},{id:'liftbelt',n:'Lifting belt'}
+  ]},
+  {cat:'Cardio', items:[
+    {id:'jumprope',n:'Jump rope'},{id:'treadmill',n:'Treadmill'},
+    {id:'bike',n:'Stationary bike'},{id:'assault',n:'Assault bike'},
+    {id:'rower',n:'Rowing machine'},{id:'elliptical',n:'Elliptical'},
+    {id:'stairstepper',n:'Stair stepper'}
   ]},
   {cat:'Home / improvised', items:[
     {id:'backpack',n:'Loaded backpack'},{id:'books',n:'Books / heavy objects'},
     {id:'jugs',n:'Water jugs / gallons'},{id:'chair',n:'Sturdy chair'},
     {id:'counter',n:'Counter (for dips)'},{id:'table',n:'Table (for rows)'},
-    {id:'doorbar',n:'Doorway bar'},{id:'towel',n:'Towel'},
-    {id:'stairs',n:'Stairs / step'},{id:'wall',n:'Wall'},
-    {id:'crate',n:'Box / crate'},{id:'suitcase',n:'Filled suitcase'}
+    {id:'towel',n:'Towel'},{id:'stairs',n:'Stairs / step'},
+    {id:'wall',n:'Wall'},{id:'crate',n:'Box / crate'},
+    {id:'suitcase',n:'Filled suitcase'},{id:'dooranchor',n:'Door anchor (bands)'}
   ]}
+];
+// Quick presets that bulk-select equipment.
+const EQUIP_PRESETS=[
+  {id:'publicgym',n:'🏋️ Public / commercial gym',ids:['dumbbells','barbell','kettlebell','ezbar','trapbar','rack','cage','bench','flatbench','smith','preacher','cables','functional','machines','legpress','legcurl','latpull','pec','rowmachine','pullup','dip','jumprope','treadmill','bike','rower','elliptical','bands','medball','plyobox','foamroller','liftbelt']},
+  {id:'homegym',n:'🏠 Home gym (typical)',ids:['dumbbells','barbell','kettlebell','bench','rack','pullup','bands','jumprope','abwheel','foamroller']},
+  {id:'minimal',n:'🎒 Minimal / improvised',ids:['dumbbells','backpack','books','jugs','chair','counter','table','stairs','wall','bodyweight','pushuphandles']},
+  {id:'bodyonly',n:'🤸 Bodyweight only',ids:['bodyweight','wall','chair','stairs']}
 ];
 const PRIORITY_MUSCLES=[
   {id:'chest',n:'Chest'},{id:'back',n:'Back / Lats'},{id:'biceps',n:'Biceps'},
@@ -249,6 +311,7 @@ function initOnb(){
     onbCache[g]=v;
   });
   renderBF();
+  renderPresets();
   renderEquip();
   renderPriority();
   // days 2-7 + custom
@@ -263,6 +326,21 @@ function initOnb(){
 }
 const onbCache={};
 
+function renderPresets(){
+  const wrap=$('#presetChips');if(!wrap)return;wrap.innerHTML='';
+  EQUIP_PRESETS.forEach(p=>{
+    const b=el('button','chip','<b>'+p.n+'</b>');
+    b.onclick=()=>applyPreset(p);
+    wrap.appendChild(b);
+  });
+}
+function applyPreset(p){
+  // turn on every chip in the preset (keeps anything already selected)
+  const set=new Set(p.ids);
+  $$('#equipCats .chip').forEach(c=>{if(set.has(c.dataset.eq))c.classList.add('on');});
+  toast(p.n.replace(/^\S+\s/,'')+' selected — tweak anything you want','good');
+  renderWeights();
+}
 function renderEquip(){
   const wrap=$('#equipCats');
   // preserve any currently-selected chips (incl. before save() commits them)
@@ -275,7 +353,7 @@ function renderEquip(){
     const chips=el('div','chips');
     items.forEach(it=>{
       const b=el('button','chip multi'+(selected.has(it.id)?' on':''),it.n+(it.custom?' ✏️':''));
-      b.dataset.eq=it.id;b.onclick=()=>b.classList.toggle('on');
+      b.dataset.eq=it.id;b.onclick=()=>{b.classList.toggle('on');renderWeights();};
       chips.appendChild(b);
     });
     d.appendChild(chips);wrap.appendChild(d);
@@ -294,6 +372,48 @@ function saveCustomEquip(){
   customEquip.push({id,n:name,cat:$('#ce_cat').value});
   closeModal();renderEquip();toast('Added — now tap to select it','good');
 }
+// Paste a product link; Gemini reads it and figures out what you've got.
+function linkEquipment(){
+  modal(`<h3>🔗 Link your equipment</h3>
+    <p style="color:var(--txt2);margin-bottom:14px;line-height:1.5">Paste a link to a weight set or gear (Walmart, Amazon, etc). I'll read it and fill in your weights automatically.${S.settings.geminiKey?'':'<br><br><b style="color:var(--amber)">Needs a free Gemini key first (Settings → AI).</b> Without it, I can still match common keywords.'}</p>
+    <div class="field"><input class="inp" id="le_url" placeholder="https://..."></div>
+    <button class="btn" id="le_go" onclick="readEquipmentLink()">Read it</button>`);
+}
+async function readEquipmentLink(){
+  const url=$('#le_url').value.trim();if(!url){toast('Paste a link first','bad');return;}
+  const btn=$('#le_go');btn.textContent='Reading…';btn.disabled=true;
+  let title='';
+  // try to read the page title/description via a public reader (no key needed)
+  try{
+    const r=await fetch('https://r.jina.ai/'+url,{headers:{'Accept':'text/plain'}});
+    if(r.ok){const t=await r.text();title=t.slice(0,1500);}
+  }catch(e){/* reader blocked — fall back to URL keywords */}
+  const text=(title||url).toLowerCase();
+  const found=new Set();let bbMax=0,dbMax=0;
+  // keyword matching for equipment types
+  const kw={dumbbells:/dumbbell/,barbell:/barbell|bar set/,kettlebell:/kettlebell|kettle bell/,
+    pushuphandles:/push.?up handle/,pushupboard:/push.?up board/,bands:/resistance band/,
+    bench:/bench/,ezbar:/ez bar|ez curl/,curlbar:/curl bar/,pullup:/pull.?up bar/,
+    weightvest:/weight vest|weighted vest/,ankleweights:/ankle weight/,medball:/medicine ball/,
+    jumprope:/jump rope|skipping rope/,abwheel:/ab wheel|ab roller/};
+  for(const id in kw){if(kw[id].test(text))found.add(id);}
+  // pull a max poundage like "60LB" / "60 lb" / "60-pound"
+  const m=text.match(/(\d{2,3})\s?(?:lb|lbs|pound)/);
+  if(m){const total=+m[1];
+    if(found.has('barbell')||/barbell|adjustable/.test(text))bbMax=total;
+    if(found.has('dumbbells'))dbMax=Math.round(total/2); // a set's total usually splits across 2 DBs
+  }
+  if(!found.size){closeModal();toast("Couldn't read that link — add items manually","bad");return;}
+  // apply: select the chips, store maxes
+  found.forEach(id=>{const c=$(`#equipCats .chip[data-eq="${id}"]`);if(c)c.classList.add('on');});
+  if(bbMax)S.profile.barbellMax=bbMax;
+  if(dbMax){
+    // build sensible dumbbell increments up to dbMax
+    const dbs=[];for(let w=5;w<=dbMax;w+=5)dbs.push(w);S.profile.dumbbells=dbs;
+  }
+  save();renderWeights();closeModal();
+  toast(`Found: ${[...found].map(id=>id).join(', ')}${bbMax?` · barbell to ${bbMax}lb`:''}`,'good');
+}
 
 function renderPriority(){
   const wrap=$('#priorityChips');wrap.innerHTML='';
@@ -307,10 +427,10 @@ function renderPriority(){
 
 function renderWeights(){
   const eq=new Set($$('#equipCats .chip.on').map(c=>c.dataset.eq).concat(S.profile.equipment||[]));
-  const sec=$('#weightSection');sec.innerHTML='';
+  const sec=$('#weightSection');if(!sec)return;sec.innerHTML='';
   // Dumbbells
   const dbOwned=new Set(S.profile.dumbbells||[]);
-  const dbGroup=el('div','wgroup',`<div class="wl">Dumbbells (lb)</div><div class="wh">Tap each pair you own</div>`);
+  const dbGroup=el('div','wgroup',`<div class="wl">Dumbbells (lb)</div><div class="wh">Tap each weight you can make (per hand)</div>`);
   const dbInv=el('div','winv');
   [3,5,8,10,12,15,20,25,30,35,40,45,50,55,60,65,70,75,80,90,100].forEach(w=>{
     const b=el('button','w'+(dbOwned.has(w)?' on':''),w);b.dataset.w=w;b.dataset.k='db';b.onclick=()=>b.classList.toggle('on');dbInv.appendChild(b);});
@@ -326,9 +446,17 @@ function renderWeights(){
     kbGroup.appendChild(kbInv);kbGroup.appendChild(customWeightAdder('kb'));
     sec.appendChild(kbGroup);
   }
-  // Barbell note
-  if(eq.has('barbell')||eq.has('smith')||eq.has('ezbar')){
-    sec.appendChild(el('div','wgroup',`<div class="wl">Barbell</div><div class="wh">I'll assume a 45lb bar with standard plates (2.5–45) and 5lb jumps. Add micro-plates in settings later if you have them.</div>`));
+  // Barbell max — this is the key fix: cap suggestions at what you can actually load
+  if(eq.has('barbell')||eq.has('smith')||eq.has('ezbar')||eq.has('curlbar')){
+    const cur=S.profile.barbellMax||'';
+    const g=el('div','wgroup',`<div class="wl">Barbell — max you can load</div>
+      <div class="wh">Total weight including the bar. (Your adjustable set tops out here.)</div>`);
+    const row=el('div','addw');
+    const inp=el('input');inp.type='number';inp.inputMode='decimal';inp.placeholder='e.g. 60';inp.value=cur;inp.id='bbMaxInp';
+    inp.onchange=()=>{S.profile.barbellMax=+inp.value||0;};
+    const lbl=el('span','small');lbl.style.cssText='align-self:center;white-space:nowrap';lbl.textContent='lb total';
+    row.appendChild(inp);row.appendChild(lbl);
+    g.appendChild(row);sec.appendChild(g);
   }
   // Household improvised note
   const household=['backpack','books','jugs','sandbag','suitcase','crate'].some(h=>eq.has(h));
@@ -444,6 +572,9 @@ const EXLIB={
     {n:'Cable Crossover',eq:['cables'],c:'Squeeze chest at the bottom of the arc.'},
     {n:'Machine Chest Press',eq:['machines','pec'],c:'Press handles together, control the return.'},
     {n:'Push-up',eq:['bodyweight','wall'],c:'Body in a straight line, full range.'},
+    {n:'Wide Push-up',eq:['bodyweight','pushupboard','pushuphandles'],c:'Hands wider than shoulders — outer chest focus.'},
+    {n:'Decline Push-up',eq:['bodyweight','pushupboard','chair','stairs'],c:'Feet elevated — hits upper chest.'},
+    {n:'Deep Push-up (handles)',eq:['pushuphandles','pushupboard'],c:'Grip handles, lower past your hands for a deeper stretch.'},
     {n:'Backpack Push-up',eq:['backpack','books'],c:'Wear a loaded pack for extra resistance.'},
     {n:'Chair Dips (chest lean)',eq:['chair','counter'],c:'Lean forward off two chairs to bias chest.'},
     {n:'Banded Chest Press',eq:['bands'],c:'Anchor behind you, press forward and squeeze.'}
@@ -523,6 +654,7 @@ const EXLIB={
     {n:'Dips',eq:['bodyweight','pullup','dip','chair','counter','parallettes'],c:'Lean slightly, full depth on bars/chairs/counter.'},
     {n:'Skull Crusher',eq:['dumbbells','barbell','ezbar','bench'],c:'Lower to forehead, extend.'},
     {n:'Diamond Push-up',eq:['bodyweight'],c:'Hands together, elbows tucked.'},
+    {n:'Narrow Push-up (board)',eq:['pushupboard','pushuphandles'],c:'Narrow hand position — tricep emphasis.'},
     {n:'Banded Pushdown',eq:['bands'],c:'Anchor high, push down, lock out.'}
   ],
   forearms:[
@@ -545,10 +677,11 @@ const EXLIB={
   ],
   lats:[]  // covered by back
 };
-const MUSCLE_LABELS={warmup:'Warm-up',chest:'Chest',back:'Back',lats:'Lats',quads:'Quads',hamstrings:'Hamstrings',glutes:'Glutes',frontDelt:'Front Delts',sideDelt:'Side Delts',rearDelt:'Rear Delts',biceps:'Biceps',triceps:'Triceps',forearms:'Forearms',abs:'Abs',calves:'Calves',traps:'Traps'};
+const MUSCLE_LABELS={warmup:'Warm-up',cardio:'Cardio',chest:'Chest',back:'Back',lats:'Lats',quads:'Quads',hamstrings:'Hamstrings',glutes:'Glutes',frontDelt:'Front Delts',sideDelt:'Side Delts',rearDelt:'Rear Delts',biceps:'Biceps',triceps:'Triceps',forearms:'Forearms',abs:'Abs',calves:'Calves',traps:'Traps'};
 
-function pickExercise(muscle,exclude){
-  const eq=S.profile.equipment||['bodyweight'];
+function pickExercise(muscle,exclude,variantSeed){
+  // bodyweight is ALWAYS available — everyone has their own body
+  const eq=(S.profile.equipment||[]).concat('bodyweight');
   const hated=(S.profile.hated||'').toLowerCase().split(/[,;]/).map(h=>h.trim()).filter(Boolean);
   const injured=(S.profile.injuries||'').toLowerCase();
   const list=(EXLIB[muscle]||[]).filter(x=>
@@ -563,51 +696,102 @@ function pickExercise(muscle,exclude){
     if((injured.includes('back')||injured.includes('spine'))&&/deadlift|barbell row|good morning/i.test(x.n))return false;
     return true;
   });
-  return (safe[0]||list[0]||(EXLIB[muscle]||[])[0]);
+  const pool=safe.length?safe:list;
+  if(!pool.length)return (EXLIB[muscle]||[])[0];
+  // rotate by a seed (e.g. the day index) so the same muscle gets a different
+  // movement on different days instead of the identical lift every time
+  const i=((variantSeed||0)%pool.length+pool.length)%pool.length;
+  return pool[i];
 }
 
-/* ---------- weights snapping to what you own ---------- */
+/* ---------- weights snapping to what you actually own ----------
+   barbellMax / dumbbellMax come from the profile (set in onboarding or
+   read from a product link). We NEVER suggest a weight above what's owned. */
+function barbellPlatesUpTo(max){
+  // realistic loadable barbell weights from an empty bar up to max, in 5lb steps
+  const bar=max>=45?45:Math.max(5,Math.round(max*0.15)); // adjustable sets have light bars
+  const out=[];for(let w=bar;w<=max;w+=5)out.push(w);
+  if(out[out.length-1]!==max)out.push(max);
+  return out.length?out:[max];
+}
 function availableWeights(ex){
-  const dbs=S.profile.dumbbells||[];
-  const kbs=S.profile.kettlebells||[];
+  const dbs=(S.profile.dumbbells||[]).slice().sort((a,b)=>a-b);
+  const kbs=(S.profile.kettlebells||[]).slice().sort((a,b)=>a-b);
   const eq=S.profile.equipment||[];
+  const bbMax=+S.profile.barbellMax||0;
   if(/kettlebell|swing/i.test(ex.n) && kbs.length) return kbs;
   if(/dumbbell|db |goblet|hammer|lateral|fly|curl|raise|farmer|arnold|rdl/i.test(ex.n) && dbs.length) return dbs;
-  if((eq.includes('barbell')||eq.includes('smith')||eq.includes('ezbar')) && /barbell|bench|squat|deadlift|press|row|curl|skull|close-grip/i.test(ex.n)){
-    const out=[];for(let w=45;w<=405;w+=5)out.push(w);return out;
+  if((eq.includes('barbell')||eq.includes('smith')||eq.includes('ezbar')||eq.includes('curlbar')) && /barbell|bench|squat|deadlift|press|row|curl|skull|close-grip/i.test(ex.n)){
+    if(bbMax>0) return barbellPlatesUpTo(bbMax);            // capped at real set max
+    return barbellPlatesUpTo(135);                          // conservative default if unknown
   }
   if(dbs.length) return dbs;
   if(kbs.length) return kbs;
   return null; // bodyweight / improvised — no fixed weight
 }
-function suggestStartWeight(ex,muscle){
+// best assessed 1RM that maps to this exercise's muscles (so we anchor to real strength)
+function assessed1RMForMuscle(muscle){
+  let best=0;
+  for(const k in S.lifts){const l=S.lifts[k];if(!l||l.unknown||!l.weight)continue;
+    if((LIFT_MUSCLES[k]||[]).includes(muscle)){best=Math.max(best,epley1RM(+l.weight,+l.reps||1));}
+  }
+  return best; // 0 if none assessed
+}
+function suggestStartWeight(ex,muscle,repTarget){
   const avail=availableWeights(ex);
-  if(!avail) return null; // bodyweight/improvised: user sets load when logging
-  const ms=muscleStrength()[muscle]||0; // 0..5
-  // experience nudges the starting point: beginners start lighter
-  const expAdj={new:-0.12, some:0, exp:0.08}[S.profile.experience]||0;
-  const frac=Math.min(0.92,Math.max(0.1,0.2+ms*0.12+expAdj));
-  const idx=Math.min(avail.length-1,Math.max(0,Math.floor(avail.length*frac)));
-  return avail[idx]||avail[0];
+  if(!avail||!avail.length) return null; // bodyweight/improvised: user sets load when logging
+  // working weight = % of 1RM appropriate for the rep target (Brzycki-ish table)
+  const reps=repTarget||10;
+  const pctOf1RM=Math.max(0.55,Math.min(0.85, 1.0278 - 0.0278*reps)); // ~75% at 10 reps
+  const oneRM=assessed1RMForMuscle(muscle);
+  let target;
+  if(oneRM>0){
+    target=oneRM*pctOf1RM;
+    if(S.profile.experience==='new') target*=0.9; // beginners start a touch lighter
+  }else{
+    // No assessed lift for this muscle. Estimate a sensible untrained working
+    // weight from bodyweight + the movement type, then snap to what's owned.
+    const bw=+S.profile.weight||150;
+    const n=(ex.n||'').toLowerCase();
+    const isDB=/dumbbell|db |goblet|hammer|lateral|fly|curl|raise|arnold|rdl|kettlebell/i.test(n)
+               || (avail===S.profile.dumbbells);
+    let frac; // fraction of bodyweight a NOVICE handles for a working set
+    if(/squat|leg press|hip thrust|deadlift|rdl|romanian/.test(n)) frac=0.45;
+    else if(/bench|row|press|pulldown/.test(n)) frac=0.30;
+    else if(/curl|extension|raise|fly|pushdown|lateral|reverse/.test(n)) frac=0.12;
+    else frac=0.20;
+    target=bw*frac;
+    if(isDB) target/=2;            // per-hand for dumbbell moves
+    if(S.profile.experience==='new') target*=0.85;
+    if(S.profile.experience==='exp') target*=1.15;
+  }
+  // snap DOWN to the closest owned weight that doesn't exceed target (never over),
+  // but never below the lightest available
+  let pick=avail[0];
+  for(const w of avail){ if(w<=target) pick=w; else break; }
+  return pick;
 }
 
 /* ============================================================
    PROGRAM GENERATION
+   Every split keeps the whole body covered — legs are never skipped.
+   Priority muscles get EXTRA volume, but big compounds still lead the
+   session, so a priority never turns the day into "arms only".
    ============================================================ */
 function splitFor(days){
   if(days<=2) return [
-    {name:'Full Body A',muscles:['quads','chest','back','sideDelt','biceps','abs']},
-    {name:'Full Body B',muscles:['hamstrings','frontDelt','back','triceps','glutes','calves']}
+    {name:'Full Body A',muscles:['quads','chest','back','sideDelt','biceps','abs','calves']},
+    {name:'Full Body B',muscles:['hamstrings','glutes','chest','back','triceps','rearDelt','abs']}
   ];
   if(days===3) return [
     {name:'Full Body A',muscles:['quads','chest','back','sideDelt','biceps','abs']},
-    {name:'Full Body B',muscles:['hamstrings','frontDelt','back','triceps','glutes','calves']},
-    {name:'Full Body C',muscles:['chest','quads','back','rearDelt','biceps','abs']}
+    {name:'Full Body B',muscles:['hamstrings','glutes','frontDelt','back','triceps','calves']},
+    {name:'Full Body C',muscles:['quads','chest','back','rearDelt','biceps','abs']}
   ];
   if(days===4) return [
-    {name:'Upper A',muscles:['chest','back','sideDelt','biceps','triceps']},
+    {name:'Upper A',muscles:['chest','back','sideDelt','biceps','triceps','abs']},
     {name:'Lower A',muscles:['quads','hamstrings','glutes','calves','abs']},
-    {name:'Upper B',muscles:['back','frontDelt','chest','triceps','biceps']},
+    {name:'Upper B',muscles:['back','frontDelt','chest','triceps','biceps','rearDelt']},
     {name:'Lower B',muscles:['hamstrings','quads','glutes','calves','abs']}
   ];
   const ppl=[
@@ -620,25 +804,42 @@ function splitFor(days){
   ];
   return days===5?ppl.slice(0,5):ppl; // 5 or 6
 }
+// fixed rep targets (single number, not a range) chosen by goal + experience
 function repScheme(){
   const g=S.profile.goal,exp=S.profile.experience;
-  if(g==='cut') return {sets:3,reps:'10-15',rest:60};
-  if(exp==='new') return {sets:3,reps:'8-12',rest:90};
-  if(exp==='exp') return {sets:4,reps:'5-12',rest:120};
-  return {sets:4,reps:'6-12',rest:105};
+  if(g==='cut') return {sets:3,reps:12,rest:60};
+  if(g==='bulk') return {sets:exp==='new'?3:4,reps:10,rest:exp==='new'?90:105};
+  if(exp==='new') return {sets:3,reps:10,rest:90};
+  if(exp==='exp') return {sets:4,reps:8,rest:120};
+  return {sets:4,reps:10,rest:105};
 }
-// how many exercises fit a session of N minutes (warmup + ~ per-exercise time)
+// rep target per muscle — small muscles & abs get higher reps
+function repsForMuscle(muscle,base){
+  if(['abs','calves','forearms','rearDelt','sideDelt'].includes(muscle)) return Math.min(15,base+5);
+  if(['biceps','triceps'].includes(muscle)) return base+2;
+  return base;
+}
+// how many WORK exercises fit a session of N minutes (after ~8 min warmup)
 function exercisesForTime(min){
-  const usable=Math.max(12,min-8); // 8 min warmup
-  return Math.max(3,Math.min(8,Math.round(usable/9))); // ~9 min per exercise
+  const usable=Math.max(12,min-8);
+  return Math.max(3,Math.min(8,Math.round(usable/9)));
 }
 function warmupFor(day){
-  // generic, joint-friendly warmup block tuned to the day's focus
   const lower=day.muscles.some(m=>['quads','hamstrings','glutes','calves'].includes(m));
   const items=lower
-    ? ['5 min easy cardio / brisk walk','Leg swings × 10 each','Bodyweight squats × 15','Glute bridges × 15','2 light ramp-up sets of your first lift']
-    : ['5 min easy cardio / arm circles','Band pull-aparts × 15','Scapular push-ups × 10','Arm/shoulder rotations × 10','2 light ramp-up sets of your first lift'];
+    ? ['3-5 min easy cardio (march, jog, or bike)','Leg swings × 10 each','Bodyweight squats × 15','Glute bridges × 15','2 light ramp-up sets of your first lift']
+    : ['3-5 min easy cardio / arm circles','Band or towel pull-aparts × 15','Scapular push-ups × 10','Shoulder rotations × 10 each','2 light ramp-up sets of your first lift'];
   return {name:'Warm-up',muscle:'warmup',cue:'Raise your heart rate and prime the joints you\'re about to train.',warmup:true,items,sets:1,reps:'~8 min',rest:0,weight:null};
+}
+function cardioFinisher(){
+  const eq=S.profile.equipment||[];
+  let pick='Brisk walk or light jog';
+  if(eq.includes('jumprope'))pick='Jump rope intervals';
+  else if(eq.includes('treadmill'))pick='Treadmill intervals';
+  else if(eq.includes('bike')||eq.includes('assault'))pick='Bike intervals';
+  else if(eq.includes('rower'))pick='Rowing intervals';
+  else if(eq.includes('stairs'))pick='Stair intervals';
+  return {name:pick,muscle:'cardio',cue:'Optional finisher — 5-10 min steady or 30s hard / 30s easy intervals.',cardio:true,items:['5-10 minutes','Steady pace, or 30s hard / 30s easy','Goal: heart rate up, breathing hard'],sets:1,reps:'5-10 min',rest:0,weight:null};
 }
 function buildLocalProgram(){
   const days=S.profile.days||4;
@@ -646,41 +847,58 @@ function buildLocalProgram(){
   const scheme=repScheme();
   const maxEx=exercisesForTime(S.profile.workoutMin||60);
   const priority=new Set(S.profile.priority||[]);
+  const wantsCardio=(S.profile.goal==='cut')||(S.profile.cardio===true);
   const program={days, scheme, week:1, workoutMin:S.profile.workoutMin||60,
     lengthMonths:S.profile.lengthMonths||'3', startDate:todayStr(),
-    split:split.map(d=>{
+    split:split.map((d,dayIdx)=>{
     const exercises=[];const used=new Set();
-    // order muscles so prioritized ones come first (more volume / earlier when fresh)
-    const ordered=d.muscles.slice().sort((a,b)=>(priority.has(b)?1:0)-(priority.has(a)?1:0));
-    ordered.forEach(m=>{
-      const ex=pickExercise(m,used);if(!ex||used.has(ex.n))return;used.add(ex.n);
+    // 1) FIRST pass: one solid exercise for EVERY muscle in the day, in the day's order
+    //    (compounds/legs lead — we do NOT reorder priority to the front)
+    d.muscles.forEach(m=>{
+      const ex=pickExercise(m,used,dayIdx);if(!ex||used.has(ex.n))return;used.add(ex.n);
       const isPriority=priority.has(m);
+      const reps=repsForMuscle(m,scheme.reps);
       exercises.push({name:ex.n,muscle:m,cue:ex.c,
-        sets:scheme.sets+(isPriority?1:0), // extra set for priority muscles
-        reps:scheme.reps,
-        weight:suggestStartWeight(ex,m),rest:scheme.rest,priority:isPriority});
+        sets:scheme.sets+(isPriority?1:0), // priority = +1 set
+        reps,
+        weight:suggestStartWeight(ex,m,reps),rest:scheme.rest,priority:isPriority});
     });
-    // add a 2nd exercise for each priority muscle if time allows
+    // 2) SECOND pass: add an extra exercise for priority muscles, time permitting
     if(exercises.length<maxEx){
-      ordered.filter(m=>priority.has(m)).forEach(m=>{
+      d.muscles.filter(m=>priority.has(m)).forEach(m=>{
         if(exercises.length>=maxEx)return;
-        const ex=pickExercise(m,used);if(!ex||used.has(ex.n))return;used.add(ex.n);
-        exercises.push({name:ex.n,muscle:m,cue:ex.c,sets:scheme.sets,reps:scheme.reps,
-          weight:suggestStartWeight(ex,m),rest:scheme.rest,priority:true});
+        const ex=pickExercise(m,used,dayIdx+1);if(!ex||used.has(ex.n))return;used.add(ex.n);
+        const reps=repsForMuscle(m,scheme.reps);
+        exercises.push({name:ex.n,muscle:m,cue:ex.c,sets:scheme.sets,reps,
+          weight:suggestStartWeight(ex,m,reps),rest:scheme.rest,priority:true});
       });
     }
-    // trim to time budget (keep priority + compounds first since they're ordered first)
     const trimmed=exercises.slice(0,maxEx);
-    return {name:d.name,exercises:[warmupFor(d),...trimmed]};
+    const out=[warmupFor(d),...trimmed];
+    if(wantsCardio)out.push(cardioFinisher());
+    return {name:d.name,exercises:out};
   })};
-  // weekly schedule with rest days spread out
-  const schedule=[];
-  const trainDays=program.split.length;
-  const map={2:[1,4],3:[0,2,4],4:[0,1,3,4],5:[0,1,2,4,5],6:[0,1,2,3,4,5],7:[0,1,2,3,4,5,6]}[trainDays]||[0,1,3,4];
-  for(let i=0;i<7;i++){const w=map.indexOf(i);schedule.push(w>=0?{type:'train',idx:w}:{type:'rest'});}
-  program.baseSchedule=JSON.parse(JSON.stringify(schedule)); // remember the template
-  program.schedule=schedule;
+  // weekly schedule — first training day starts TODAY (no opening rest day)
+  program.baseSchedule=scheduleFor(program.split.length,true);
+  program.schedule=JSON.parse(JSON.stringify(program.baseSchedule));
+  program.overrides={};
   return program;
+}
+// Build a 7-day schedule. If startToday, the soonest train day is today's weekday.
+function scheduleFor(trainDays,startToday){
+  const spread={2:[0,3],3:[0,2,4],4:[0,1,3,4],5:[0,1,2,4,5],6:[0,1,2,3,4,5],7:[0,1,2,3,4,5,6]}[trainDays]||[0,2,4];
+  const today=(new Date().getDay()+6)%7; // Mon=0
+  const sched=[];
+  for(let i=0;i<7;i++)sched.push({type:'rest'});
+  // place training days starting from today, spaced like the spread pattern
+  const gaps=spread.map((v,i)=>i===0?0:v-spread[i-1]);
+  let cursor=startToday?today:spread[0];
+  let idx=0;
+  for(let k=0;k<trainDays;k++){
+    sched[cursor%7]={type:'train',idx:idx++};
+    cursor+= (gaps[k+1]||Math.round(7/trainDays));
+  }
+  return sched;
 }
 
 async function buildProgram(){
@@ -709,15 +927,32 @@ async function buildProgram(){
 /* ============================================================
    GEMINI INTEGRATION  — honest coach, not a yes-man
    ============================================================ */
-const GEMINI_URL='https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=';
-const COACH_PERSONA=`You are FORGE, an evidence-based strength coach. You are blunt, supportive, and grounded in exercise science (progressive overload, RPE, recovery, hypertrophy/strength rep ranges, volume landmarks). You are NOT a hype machine and NOT a yes-man. If the data says the user should LOWER a weight, deload, add a rest day, or fix a muscle imbalance, you say so directly. Keep responses tight and practical. Never invent numbers — reason from the data given.`;
-async function geminiCall(prompt){
+const GEMINI_MODEL='gemini-2.5-flash';
+const GEMINI_URL='https://generativelanguage.googleapis.com/v1beta/models/'+GEMINI_MODEL+':generateContent?key=';
+const COACH_PERSONA=`You are a real strength coach texting with your client — talk like an actual human, not an AI assistant. Warm, direct, encouraging, a little informal. Use plain language a normal person uses at the gym. NEVER say you're an AI, never give disclaimers, never use bullet points or headers in chat — just talk. Keep it to 2-4 sentences unless they ask for detail. You know your stuff (progressive overload, recovery, rep ranges, form) but you explain it simply. You're honest: if they should drop a weight, deload, rest, or fix form, you tell them straight — kindly. Give concrete, doable advice like "drop to a weight where the last two reps are hard but clean, then build back up." Never invent numbers — work from what they tell you.`;
+async function geminiCall(prompt, imageB64){
   if(!S.settings.geminiKey) throw new Error('no key');
-  const r=await fetch(GEMINI_URL+S.settings.geminiKey,{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({systemInstruction:{parts:[{text:COACH_PERSONA}]},contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:0.7,maxOutputTokens:500}})});
+  const parts=[{text:prompt}];
+  if(imageB64)parts.push({inline_data:{mime_type:'image/jpeg',data:imageB64}});
+  let r;
+  try{
+    r=await fetch(GEMINI_URL+S.settings.geminiKey,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({systemInstruction:{parts:[{text:COACH_PERSONA}]},contents:[{parts}],generationConfig:{temperature:0.7,maxOutputTokens:700}})});
+  }catch(e){throw new Error('network');}
+  if(r.status===400||r.status===403)throw new Error('badkey');
+  if(r.status===429)throw new Error('limit');
   if(!r.ok)throw new Error('gemini '+r.status);
   const d=await r.json();
   return d.candidates?.[0]?.content?.parts?.[0]?.text||'';
+}
+// human-friendly explanation of why an AI call failed
+function aiErrorMsg(e){
+  const m=(e&&e.message)||'';
+  if(m==='no key')return 'Add your free Gemini key in Settings → AI first.';
+  if(m==='badkey')return 'That Gemini key looks invalid. Re-copy it from aistudio.google.com.';
+  if(m==='limit')return 'Gemini free limit hit for now — try again in a bit.';
+  if(m==='network')return 'No connection to Gemini. Check your internet and try again.';
+  return 'Coach is unavailable right now. Try again shortly.';
 }
 async function geminiProgram(){
   const p=S.profile;
@@ -866,6 +1101,7 @@ function streak(){
   return s;
 }
 function renderHome(){
+  if(!S.program){go('workout');return;}
   const p=S.profile,r=overallRank(),tw=todaysWorkout();
   const bmi=calcBMI(),tdee=calcTDEE();
   const hour=new Date().getHours();
@@ -893,10 +1129,10 @@ function renderHome(){
       <button class="btn ghost sm" style="width:100%;margin-top:14px" onclick="go('workout')">Train again</button>
     </div>`;
   } else if(tw&&!tw.rest){
-    const muscles=tw.exercises?tw.exercises.filter(e=>!e.warmup).map(e=>MUSCLE_LABELS[e.muscle]).filter((v,i,a)=>a.indexOf(v)===i).slice(0,4).join(', '):'';
+    const muscles=tw.exercises?tw.exercises.filter(e=>!e.warmup&&!e.cardio).map(e=>MUSCLE_LABELS[e.muscle]).filter((v,i,a)=>a.indexOf(v)===i).slice(0,4).join(', '):'';
     h+=`<div class="card" style="border-color:var(--acc2)">
       <div class="day-pill">Today · ${tw.name}</div>
-      <div style="font-size:13px;color:var(--txt2);font-weight:600;margin-bottom:14px">${tw.exercises?tw.exercises.length-1:0} exercises + warm-up · ${muscles}</div>
+      <div style="font-size:13px;color:var(--txt2);font-weight:600;margin-bottom:14px">${tw.exercises?tw.exercises.filter(e=>!e.warmup&&!e.cardio).length:0} exercises + warm-up · ${muscles}</div>
       <button class="btn" onclick="go('workout')">Start Workout</button>
     </div>`;
   } else if(tw&&tw.recovery){
@@ -919,12 +1155,15 @@ function renderHome(){
     <div class="stat"><div class="v">${streak()}<small>d</small></div><div class="l">Streak</div></div>
     <div class="stat"><div class="v">${S.logs.length}</div><div class="l">Workouts</div></div>
     <div class="stat"><div class="v">${bmi||'—'}</div><div class="l">BMI</div></div>
-    <div class="stat"><div class="v">${tdee.toLocaleString()}</div><div class="l">Daily Calories</div></div>
+    <div class="stat" onclick="explainCalories()" style="cursor:pointer"><div class="v">${tdee.toLocaleString()}</div><div class="l">Daily Calories ⓘ</div></div>
   </div>`;
 
   if(S.program.coachNote){
     h+=`<div class="coach"><div class="cl">⚡ Coach</div><p>${S.program.coachNote}</p></div>`;
   }
+
+  // Talk to coach
+  h+=`<button class="btn ghost" style="width:100%;margin-bottom:14px" onclick="openCoachChat()">💬 Ask your coach anything</button>`;
 
   // muscle map preview (tappable)
   h+=`<div class="card"><div class="card-h"><div class="t">Muscle Strength</div><button class="small" style="color:var(--acc);font-weight:700" onclick="go('progress')">Details →</button></div>
@@ -943,13 +1182,114 @@ function muscleInfo(m){
     :lvl<2.8?'Developing nicely. Keep adding load and volume.'
     :lvl<4?'Strong for your bodyweight. Solid base here.'
     :'Elite-level strength for your bodyweight. Maintain and refine.';
+  const aiBtn=S.settings.geminiKey?`<button class="btn" style="margin-top:12px" onclick="muscleAIDetail('${m}')">⚡ Get detailed AI breakdown</button>`:'';
   modal(`<h3>${MUSCLE_LABELS[m]||m}</h3>
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
       <span class="tier tier-${tier}" style="font-size:12px;font-weight:800;padding:4px 11px;border-radius:20px">${tier}</span>
       <div class="rank-bar" style="flex:1;margin:0"><i style="width:${Math.min(100,lvl*20)}%"></i></div>
     </div>
     <p style="color:var(--txt2);line-height:1.55">${desc}</p>
+    <div id="muscleAI"></div>
+    ${aiBtn}
+    <button class="btn ghost" style="margin-top:10px" onclick="closeModal()">Got it</button>`);
+}
+async function muscleAIDetail(m){
+  const box=$('#muscleAI');box.innerHTML='<p class="small" style="margin-top:12px">Coach is analyzing…</p>';
+  const lvl=(muscleStrength()[m]||0);
+  const lifts=Object.entries(S.lifts).filter(([k,v])=>v&&!v.unknown&&v.weight&&(LIFT_MUSCLES[k]||[]).includes(m)).map(([k,v])=>`${k} ${v.weight}x${v.reps}`).join(', ')||'no direct lifts logged';
+  try{
+    const fb=await geminiCall(`Athlete: ${S.profile.age}yo ${S.profile.sex}, ${S.profile.weight}lb, experience=${S.profile.experience}, goal=${S.profile.goal}. Their ${MUSCLE_LABELS[m]} ranks around "${TIERS[Math.min(5,Math.round(lvl))]}". Relevant lifts: ${lifts}. In 3-4 sentences: how developed is this muscle for someone their size, what's likely holding it back, and the single best thing to do next. Be specific and honest.`);
+    box.innerHTML=`<div class="coach" style="margin-top:12px"><div class="cl">⚡ Coach</div><p>${fb.replace(/\n/g,'<br>')}</p></div>`;
+  }catch(e){box.innerHTML=`<p class="small" style="margin-top:12px;color:var(--amber)">${aiErrorMsg(e)}</p>`;}
+}
+// explain the daily-calorie number in plain language
+function explainCalories(){
+  const p=S.profile;const kg=(+p.weight||0)*0.4536;const cm=((+p.heightFt||0)*12+(+p.heightIn||0))*2.54;const age=+p.age||25;
+  const bmr=Math.round(p.sex==='female'?(10*kg+6.25*cm-5*age-161):(10*kg+6.25*cm-5*age+5));
+  const tdee=calcTDEE();const target=calorieTarget();
+  const actName={2:'lightly active (2 days/wk)',3:'lightly active',4:'moderately active',5:'very active',6:'very active',7:'extremely active'}[+p.days]||'active';
+  const goalLine=p.goal==='bulk'?`Because you're <b>bulking</b>, I add ~350 on top → <b>${target.toLocaleString()}</b> to build muscle.`
+    :p.goal==='cut'?`Because you're <b>cutting</b>, I subtract ~450 → <b>${target.toLocaleString()}</b> to lose fat while keeping muscle.`
+    :`Since you're <b>maintaining</b>, your target stays at <b>${target.toLocaleString()}</b>.`;
+  modal(`<h3>Why ${tdee.toLocaleString()} calories?</h3>
+    <div style="color:var(--txt2);line-height:1.6">
+    <p style="margin-bottom:10px">Your body burns calories even at rest. Here's the math:</p>
+    <p style="margin-bottom:8px">• <b style="color:var(--txt)">Base (BMR):</b> ${bmr.toLocaleString()} cal — what you'd burn doing nothing all day, based on your age (${age}), height, weight, and sex.</p>
+    <p style="margin-bottom:8px">• <b style="color:var(--txt)">Activity:</b> you're ${actName}, so I multiply that base up to <b>${tdee.toLocaleString()}</b> — your real daily burn.</p>
+    <p style="margin-bottom:8px">• <b style="color:var(--txt)">Your goal:</b> ${goalLine}</p>
+    <p style="margin-top:12px;font-size:13px">At ${age}, your metabolism runs fast — this number is normal for a healthy teen, not high. Eat below it to lose, above it to gain.</p>
+    </div>
     <button class="btn ghost" style="margin-top:16px" onclick="closeModal()">Got it</button>`);
+}
+// ---- AI coach chat (text + optional photo) ----
+let coachChatLog=[];
+function openCoachChat(){
+  if(!S.settings.geminiKey){modal(`<h3>💬 Coach Chat</h3><p style="color:var(--txt2);line-height:1.5">Add your free Gemini key in Settings → AI to chat with your coach. Then you can ask things like "this exercise left me out of breath" or "how do I lose face fat" and attach a photo.</p><button class="btn" style="margin-top:16px" onclick="closeModal();openSettings()">Open Settings</button>`);return;}
+  renderCoachChat();
+}
+function renderCoachChat(){
+  const msgs=coachChatLog.map((m,mi)=>m.role==='user'
+    ?`<div style="text-align:right;margin:8px 0"><span style="display:inline-block;background:var(--acc);color:#0a0a0b;padding:9px 13px;border-radius:14px 14px 4px 14px;font-weight:600;max-width:85%;text-align:left">${m.text}${m.img?' 📷':''}</span></div>`
+    :`<div style="margin:8px 0"><span style="display:inline-block;background:var(--card2);padding:9px 13px;border-radius:14px 14px 14px 4px;max-width:85%">${m.text.replace(/\n/g,'<br>')}</span>${m.changes?m.changes.map(c=>`<div style="margin-top:6px"><button class="btn sm" style="font-size:12px;padding:7px 12px" onclick="applyCoachChange('${c.name.replace(/'/g,"")}',${c.weight})">✓ Set ${c.name} to ${c.weight}lb</button></div>`).join(''):''}</div>`
+  ).join('')||'<p class="small" style="text-align:center;padding:20px">Talk to your coach like a real person — "this left me out of breath", "my shoulder feels off on press", "is this weight too light?". Attach a photo for form or physique feedback. If the advice means changing a weight, you\'ll get a button to apply it.</p>';
+  modal(`<h3>💬 Coach Chat</h3>
+    <div id="chatScroll" style="max-height:46vh;overflow-y:auto;margin-bottom:12px">${msgs}</div>
+    <div id="chatImgPreview"></div>
+    <div class="addw">
+      <input class="inp" id="chatInput" placeholder="Message your coach…" style="flex:1" onkeydown="if(event.key==='Enter')sendCoachChat()">
+      <button class="btn ghost sm" style="flex:0 0 auto" onclick="$('#chatImgInput').click()">📷</button>
+      <button class="btn sm" style="flex:0 0 auto" onclick="sendCoachChat()">Send</button>
+    </div>
+    <input type="file" id="chatImgInput" accept="image/*" style="display:none" onchange="stageChatImg(this)">`);
+  const sc=$('#chatScroll');if(sc)sc.scrollTop=sc.scrollHeight;
+}
+let stagedChatImg=null;
+function stageChatImg(input){
+  const f=input.files[0];if(!f)return;
+  const rd=new FileReader();rd.onload=()=>{stagedChatImg=rd.result.split(',')[1];
+    $('#chatImgPreview').innerHTML=`<div class="small" style="margin-bottom:8px;color:var(--acc)">📷 Photo attached — add a question and send</div>`;};
+  rd.readAsDataURL(f);
+}
+async function sendCoachChat(){
+  const inp=$('#chatInput');const text=inp.value.trim();
+  if(!text&&!stagedChatImg)return;
+  coachChatLog.push({role:'user',text:text||'(photo)',img:!!stagedChatImg});
+  const img=stagedChatImg;stagedChatImg=null;
+  renderCoachChat();
+  coachChatLog.push({role:'coach',text:'…thinking'});renderCoachChat();
+  // give the coach the current program so its advice is specific to their lifts
+  const prog=S.program?S.program.split.map(d=>d.name+': '+d.exercises.filter(e=>!e.warmup&&!e.cardio).map(e=>`${e.name} ${e.weight!=null?e.weight+'lb':'bodyweight'}×${e.reps}`).join(', ')).join(' | '):'no program yet';
+  const history=coachChatLog.slice(-7,-1).map(m=>`${m.role==='user'?'Client':'You'}: ${m.text}`).join('\n');
+  const ctx=`${history?history+'\n':''}Client just said: "${text}".
+
+Their profile: ${S.profile.age}yo ${S.profile.sex}, ${S.profile.weight}lb, goal=${S.profile.goal}, experience=${S.profile.experience}.
+Their current program: ${prog}.
+
+Reply as their coach (human, conversational, 2-4 sentences). If they're describing how an exercise felt (out of breath, too easy, too hard, painful), react like a coach would and tell them what to do about it.
+
+AFTER your reply, if your advice implies a concrete change to a specific exercise's weight, append on a NEW LINE exactly: [[CHANGE:exercise name|newWeightInLb]] (use the closest exercise name from their program; omit this line entirely if no specific weight change applies). Example: [[CHANGE:Barbell Bench Press|95]]`;
+  try{
+    const raw=await geminiCall(ctx,img);
+    // pull out any change directive
+    const changes=[];const clean=(raw||'').replace(/\[\[CHANGE:([^|\]]+)\|(\d+(?:\.\d+)?)\]\]/g,(m,name,w)=>{changes.push({name:name.trim(),weight:+w});return '';}).trim();
+    coachChatLog[coachChatLog.length-1]={role:'coach',text:clean||'Got it.',changes:changes.length?changes:null};
+  }catch(e){coachChatLog[coachChatLog.length-1]={role:'coach',text:aiErrorMsg(e)};}
+  renderCoachChat();
+}
+// apply a coach-suggested weight change into the live program
+function applyCoachChange(name,weight){
+  if(!S.program)return;
+  let hit=0;
+  S.program.split.forEach(d=>d.exercises.forEach(e=>{
+    if(!e.warmup && e.name.toLowerCase()===name.toLowerCase()){e.weight=weight;hit++;}
+  }));
+  if(!hit){ // fuzzy: first exercise containing the words
+    const key=name.toLowerCase().split(' ')[0];
+    S.program.split.forEach(d=>d.exercises.forEach(e=>{if(!hit&&!e.warmup&&e.name.toLowerCase().includes(key)){e.weight=weight;hit++;}}));
+  }
+  save();
+  toast(hit?`Updated ${name} to ${weight}lb`:'Could not find that exercise','good');
+  if($('#s_workout'))try{renderWorkout();}catch(e){}
 }
 
 /* ---------- MUSCLE MAP SVG (front body, colored by strength) ---------- */
@@ -964,21 +1304,43 @@ function muscleMapSVG(){
   const ms=muscleStrength();
   const c=m=>muscColor(ms[m]||0);
   const tap=m=>`onclick="muscleInfo('${m}')" style="cursor:pointer"`;
-  return `<div class="mmap"><svg viewBox="0 0 120 240" xmlns="http://www.w3.org/2000/svg">
-    <circle cx="60" cy="20" r="13" fill="#2a2a30"/>
-    <path d="M40 36 Q60 30 80 36 L78 46 Q60 40 42 46 Z" fill="${c('traps')}" ${tap('traps')}/>
-    <circle cx="36" cy="52" r="11" fill="${c('frontDelt')}" ${tap('frontDelt')}/>
-    <circle cx="84" cy="52" r="11" fill="${c('frontDelt')}" ${tap('frontDelt')}/>
-    <path d="M44 48 Q60 44 76 48 L74 74 Q60 80 46 74 Z" fill="${c('chest')}" ${tap('chest')}/>
-    <rect x="50" y="78" width="20" height="34" rx="5" fill="${c('abs')}" ${tap('abs')}/>
-    <rect x="26" y="60" width="11" height="30" rx="5" fill="${c('biceps')}" ${tap('biceps')}/>
-    <rect x="83" y="60" width="11" height="30" rx="5" fill="${c('biceps')}" ${tap('biceps')}/>
-    <rect x="24" y="90" width="9" height="28" rx="4" fill="${c('forearms')}" ${tap('forearms')}/>
-    <rect x="87" y="90" width="9" height="28" rx="4" fill="${c('forearms')}" ${tap('forearms')}/>
-    <rect x="46" y="116" width="13" height="48" rx="6" fill="${c('quads')}" ${tap('quads')}/>
-    <rect x="61" y="116" width="13" height="48" rx="6" fill="${c('quads')}" ${tap('quads')}/>
-    <rect x="47" y="170" width="11" height="40" rx="5" fill="${c('calves')}" ${tap('calves')}/>
-    <rect x="62" y="170" width="11" height="40" rx="5" fill="${c('calves')}" ${tap('calves')}/>
+  const base='#26262c';
+  return `<div class="mmap"><svg viewBox="0 0 140 280" xmlns="http://www.w3.org/2000/svg">
+    <!-- head + neck -->
+    <ellipse cx="70" cy="22" rx="13" ry="15" fill="${base}"/>
+    <path d="M63 35 h14 v8 h-14 Z" fill="${base}"/>
+    <!-- traps -->
+    <path d="M48 44 Q70 36 92 44 Q86 52 70 50 Q54 52 48 44 Z" fill="${c('traps')}" ${tap('traps')}/>
+    <!-- delts (rounded caps) -->
+    <ellipse cx="42" cy="58" rx="13" ry="12" fill="${c('frontDelt')}" ${tap('frontDelt')}/>
+    <ellipse cx="98" cy="58" rx="13" ry="12" fill="${c('frontDelt')}" ${tap('frontDelt')}/>
+    <!-- chest (two pecs) -->
+    <path d="M55 50 Q70 47 70 49 L70 78 Q60 84 50 76 Q48 60 55 50 Z" fill="${c('chest')}" ${tap('chest')}/>
+    <path d="M85 50 Q70 47 70 49 L70 78 Q80 84 90 76 Q92 60 85 50 Z" fill="${c('chest')}" ${tap('chest')}/>
+    <!-- biceps -->
+    <path d="M30 62 Q26 76 30 92 L40 90 Q42 74 40 64 Q35 60 30 62 Z" fill="${c('biceps')}" ${tap('biceps')}/>
+    <path d="M110 62 Q114 76 110 92 L100 90 Q98 74 100 64 Q105 60 110 62 Z" fill="${c('biceps')}" ${tap('biceps')}/>
+    <!-- forearms -->
+    <path d="M28 94 Q26 108 30 124 L38 122 Q40 106 38 94 Z" fill="${c('forearms')}" ${tap('forearms')}/>
+    <path d="M112 94 Q114 108 110 124 L102 122 Q100 106 102 94 Z" fill="${c('forearms')}" ${tap('forearms')}/>
+    <!-- abs (6-pack grid) -->
+    <g ${tap('abs')}>
+      <rect x="58" y="82" width="11" height="11" rx="2" fill="${c('abs')}"/>
+      <rect x="71" y="82" width="11" height="11" rx="2" fill="${c('abs')}"/>
+      <rect x="58" y="95" width="11" height="11" rx="2" fill="${c('abs')}"/>
+      <rect x="71" y="95" width="11" height="11" rx="2" fill="${c('abs')}"/>
+      <rect x="58" y="108" width="11" height="12" rx="2" fill="${c('abs')}"/>
+      <rect x="71" y="108" width="11" height="12" rx="2" fill="${c('abs')}"/>
+    </g>
+    <!-- obliques -->
+    <path d="M52 84 Q50 104 56 122 L58 120 Q56 100 57 84 Z" fill="${c('abs')}" opacity="0.6" ${tap('abs')}/>
+    <path d="M88 84 Q90 104 84 122 L82 120 Q84 100 83 84 Z" fill="${c('abs')}" opacity="0.6" ${tap('abs')}/>
+    <!-- quads -->
+    <path d="M52 126 Q50 160 56 192 L66 190 Q68 154 66 126 Q59 122 52 126 Z" fill="${c('quads')}" ${tap('quads')}/>
+    <path d="M88 126 Q90 160 84 192 L74 190 Q72 154 74 126 Q81 122 88 126 Z" fill="${c('quads')}" ${tap('quads')}/>
+    <!-- calves -->
+    <path d="M55 196 Q52 222 58 246 L66 244 Q67 220 65 196 Z" fill="${c('calves')}" ${tap('calves')}/>
+    <path d="M85 196 Q88 222 82 246 L74 244 Q73 220 75 196 Z" fill="${c('calves')}" ${tap('calves')}/>
   </svg></div>`;
 }
 
@@ -1004,7 +1366,7 @@ function previewDay(idx){
   $$('#dayTabs button').forEach((b,i)=>b.classList.toggle('on',i===idx));
   const d=S.program.split[idx];
   const fav=S.favorites.includes(d.name);
-  const workCount=d.exercises.filter(e=>!e.warmup).length;
+  const workCount=d.exercises.filter(e=>!e.warmup&&!e.cardio).length;
   let h=`<div class="card" style="border-color:var(--acc2)">
     <div style="display:flex;justify-content:space-between;align-items:center">
       <div class="disp" style="font-size:24px">${d.name}</div>
@@ -1020,23 +1382,56 @@ function previewDay(idx){
         <span class="ex-musc">Warm-up</span></div></div>`;
       return;
     }
+    if(e.cardio){
+      h+=`<div class="ex-card" style="border-color:var(--acc2)"><div class="ex-head">
+        <div><div class="nm">🏃 ${e.name}</div><div class="meta">${e.reps} · optional finisher</div></div>
+        <span class="ex-musc">Cardio</span></div></div>`;
+      return;
+    }
     const loadStr=e.weight!=null?`start ${e.weight}lb`:'bodyweight / your load';
     h+=`<div class="ex-card"><div class="ex-head">
-      <div><div class="nm">${e.name}${e.priority?' <span style="color:var(--acc);font-size:12px">★ priority</span>':''}</div><div class="meta">${e.sets} sets · ${e.reps} reps · ${loadStr}</div></div>
+      <div><div class="nm">${e.name}${e.priority?' <span style="color:var(--acc);font-size:12px">★ priority</span>':''}</div>
+        <div class="meta">${e.sets} × ${e.reps} reps · <button onclick="pickWeight('${d.name.replace(/'/g,"")}','${e.name.replace(/'/g,"")}')" style="color:var(--acc);font-weight:700;text-decoration:underline">${loadStr}</button></div></div>
       <button class="ex-musc" onclick="showForm('${e.name.replace(/'/g,"")}','${e.muscle}')">${MUSCLE_LABELS[e.muscle]}</button>
     </div></div>`;
   });
   $('#dayPreview').innerHTML=h;
 }
+// let the user pick the exact weight they want for an exercise (only weights they own + custom)
+function pickWeight(dayName,exName){
+  const day=S.program.split.find(d=>d.name===dayName);if(!day)return;
+  const ex=day.exercises.find(e=>e.name===exName);if(!ex)return;
+  const avail=availableWeights({n:ex.name})||[];
+  const chips=avail.map(w=>`<button class="w${ex.weight===w?' on':''}" onclick="setExWeight('${dayName.replace(/'/g,"")}','${exName.replace(/'/g,"")}',${w})">${w}</button>`).join('');
+  modal(`<h3>${ex.name}</h3>
+    <p style="color:var(--txt2);margin-bottom:12px">Pick the weight you want to work with. I'll only show what you own — tap one, or type your own below.</p>
+    ${avail.length?`<div class="winv">${chips}</div>`:'<p class="small" style="margin-bottom:12px">This is a bodyweight / improvised move — set your load when you log.</p>'}
+    <div class="addw" style="margin-top:12px">
+      <input class="inp" id="customExW" type="number" inputmode="decimal" placeholder="Custom weight (lb)" style="flex:1">
+      <button class="btn sm" style="flex:0 0 auto" onclick="setExWeight('${dayName.replace(/'/g,"")}','${exName.replace(/'/g,"")}', +$('#customExW').value)">Set</button>
+    </div>
+    ${ex.weight!=null?`<button class="btn ghost sm" style="width:100%;margin-top:10px" onclick="setExWeight('${dayName.replace(/'/g,"")}','${exName.replace(/'/g,"")}',null)">Make it bodyweight</button>`:''}`);
+}
+function setExWeight(dayName,exName,w){
+  const day=S.program.split.find(d=>d.name===dayName);if(!day)return;
+  const ex=day.exercises.find(e=>e.name===exName);if(!ex)return;
+  if(w===null){ex.weight=null;}
+  else{if(!w||w<=0){toast('Enter a weight','bad');return;}ex.weight=w;}
+  save();closeModal();
+  const idx=S.program.split.indexOf(day);previewDay(idx);
+  toast('Weight updated','good');
+}
 function toggleFav(name){const i=S.favorites.indexOf(name);if(i>=0)S.favorites.splice(i,1);else S.favorites.push(name);save();previewDay(S.program.split.findIndex(d=>d.name===name));toast(i>=0?'Removed favorite':'Added to favorites ★');}
 
 function showForm(name,muscle){
   const ex=Object.values(EXLIB).flat().find(x=>x.n===name);
+  const yt='https://www.youtube.com/results?search_query='+encodeURIComponent(name+' proper form how to');
   modal(`<h3>${name}</h3>
     <div style="background:var(--bg3);border-radius:14px;padding:18px;text-align:center;margin-bottom:14px">
       ${formAnimation(name)}
-      <p class="small" style="margin-top:6px">Animated form guide</p>
+      <p class="small" style="margin-top:6px">Animated form guide — watch the motion loop</p>
     </div>
+    <a href="${yt}" target="_blank" rel="noopener" class="btn ghost" style="display:block;text-align:center;margin-bottom:14px;text-decoration:none">▶ Watch real demos on YouTube</a>
     <div style="display:flex;gap:8px;margin-bottom:12px"><span class="ex-musc">${MUSCLE_LABELS[muscle]}</span></div>
     <p style="color:var(--txt);line-height:1.6">${ex?ex.c:'Controlled reps, full range of motion, brace your core.'}</p>
     <button class="btn ghost" style="margin-top:18px" onclick="closeModal()">Got it</button>`);
@@ -1061,135 +1456,164 @@ function movementPattern(name){
 }
 function formAnimation(name){
   const pat=movementPattern(name);
-  const SP='dur="2.2s" repeatCount="indefinite" calcMode="spline" keyTimes="0;0.5;1" keySplines="0.4 0 0.2 1;0.4 0 0.2 1"';
-  const open='<svg viewBox="0 0 140 152" style="width:124px;height:134px">';
-  const ground='<line x1="28" y1="148" x2="112" y2="148" stroke="var(--line)" stroke-width="2"/>';
+  // slower, smooth ease so the motion is readable
+  const DUR='2.6s';
+  const SP=`dur="${DUR}" repeatCount="indefinite" calcMode="spline" keyTimes="0;0.5;1" keySplines="0.42 0 0.58 1;0.42 0 0.58 1"`;
+  const open='<svg viewBox="0 0 160 170" style="width:150px;height:160px">';
   const close='</svg>';
-  const body='var(--txt2)', acc='var(--acc)';
-  // reusable bar (centered horizontally at given y, width w)
-  const bar=(y,w=70)=>{const x=70-w/2;return `<rect x="${x}" y="${y}" width="${w}" height="6" rx="3" fill="${acc}"/><rect x="${x-2}" y="${y-6}" width="6" height="18" rx="2" fill="${acc}"/><rect x="${x+w-4}" y="${y-6}" width="6" height="18" rx="2" fill="${acc}"/>`;};
+  const ground=(y=158)=>`<line x1="20" y1="${y}" x2="140" y2="${y}" stroke="var(--line)" stroke-width="2.5"/>`;
+  const skin='#aab0b8', limb='#8b919a', acc='var(--acc)', jt='#6f757e';
+  // a "limb" = thick rounded line between two points
+  const seg=(x1,y1,x2,y2,w=9,col=limb)=>`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${col}" stroke-width="${w}" stroke-linecap="round"/>`;
+  const joint=(x,y,r=4)=>`<circle cx="${x}" cy="${y}" r="${r}" fill="${jt}"/>`;
+  const head=(x,y,r=12)=>`<circle cx="${x}" cy="${y}" r="${r}" fill="${skin}"/>`;
+  // a loaded barbell drawn horizontally, centered at (cx,y)
+  const barbell=(cx,y,half=34)=>`<line x1="${cx-half}" y1="${y}" x2="${cx+half}" y2="${y}" stroke="${acc}" stroke-width="5"/>
+    <rect x="${cx-half-4}" y="${y-9}" width="7" height="18" rx="2" fill="${acc}"/><rect x="${cx+half-3}" y="${y-9}" width="7" height="18" rx="2" fill="${acc}"/>`;
+  // dumbbell in a hand at (x,y)
+  const db=(x,y)=>`<rect x="${x-9}" y="${y-4}" width="18" height="8" rx="3" fill="${acc}"/><rect x="${x-12}" y="${y-7}" width="5" height="14" rx="2" fill="${acc}"/><rect x="${x+7}" y="${y-7}" width="5" height="14" rx="2" fill="${acc}"/>`;
+  // up/down or in/out motion arrow + phase label
+  const arrowV=(x,top,bot)=>`<g opacity="0.9"><line x1="${x}" y1="${top}" x2="${x}" y2="${bot}" stroke="${acc}" stroke-width="2" stroke-dasharray="3 3"/>
+    <path d="M${x-4} ${top+5} L${x} ${top} L${x+4} ${top+5}" fill="none" stroke="${acc}" stroke-width="2"/>
+    <path d="M${x-4} ${bot-5} L${x} ${bot} L${x+4} ${bot-5}" fill="none" stroke="${acc}" stroke-width="2"/></g>`;
+  const label=t=>`<text x="80" y="14" text-anchor="middle" fill="var(--txt3)" font-size="11" font-weight="700" font-family="system-ui">${t}</text>`;
 
   switch(pat){
-    case 'press_v': return open+ground+
-      `<rect x="62" y="96" width="7" height="50" rx="3" fill="${body}"/><rect x="71" y="96" width="7" height="50" rx="3" fill="${body}"/>
-       <rect x="61" y="56" width="18" height="42" rx="7" fill="${body}"/><circle cx="70" cy="45" r="11" fill="${body}"/>
-       <g><animateTransform attributeName="transform" type="translate" values="0 0;0 -30;0 0" ${SP}/>
-         <rect x="50" y="54" width="7" height="20" rx="3" fill="${body}" transform="rotate(18 53 56)"/>
-         <rect x="83" y="54" width="7" height="20" rx="3" fill="${body}" transform="rotate(-18 87 56)"/>
-         ${bar(50,64)}</g>`+close;
+    /* ---- horizontal press: bench / push-up (side view, lying down) ---- */
+    case 'press_h': return open+label('Lower to chest → press up')+
+      `<rect x="34" y="120" width="92" height="9" rx="4" fill="var(--line)"/>
+       ${head(40,112)}
+       ${seg(50,116,92,116,15,skin)}
+       ${seg(92,116,108,128,9)}${seg(108,128,124,128,9)}
+       ${arrowV(80,70,104)}
+       <g><animateTransform attributeName="transform" type="translate" values="0 0;0 26;0 0" ${SP}/>
+         ${seg(70,116,70,82,8)}${joint(70,82)}
+         ${barbell(70,78,30)}</g>`+close;
 
-    case 'press_h': return open+
-      `<line x1="30" y1="104" x2="112" y2="104" stroke="var(--line)" stroke-width="3"/>
-       <rect x="44" y="92" width="56" height="12" rx="4" fill="var(--bg)" stroke="var(--line)" stroke-width="1.5"/>
-       <circle cx="42" cy="86" r="10" fill="${body}"/>
-       <rect x="50" y="84" width="44" height="14" rx="7" fill="${body}"/>
-       <rect x="92" y="86" width="20" height="9" rx="4" fill="${body}"/>
-       <g><animateTransform attributeName="transform" type="translate" values="0 0;0 -28;0 0" ${SP}/>
-         <rect x="64" y="62" width="7" height="26" rx="3" fill="${body}"/>
-         ${bar(56,52)}</g>`+close;
+    /* ---- vertical press: overhead / shoulder press (standing, front) ---- */
+    case 'press_v': return open+ground()+label('Press overhead → lower to shoulders')+
+      `${seg(72,150,72,108,10)}${seg(88,150,88,108,10)}
+       ${seg(72,108,80,96,11)}${seg(88,108,80,96,11)}
+       ${head(80,84)}
+       ${arrowV(122,58,96)}
+       <g><animateTransform attributeName="transform" type="translate" values="0 0;0 -34;0 0" ${SP}/>
+         ${seg(64,98,58,84,8)}${seg(96,98,102,84,8)}
+         ${seg(58,84,72,84,8)}${seg(102,84,88,84,8)}
+         ${barbell(80,80,30)}${joint(58,84)}${joint(102,84)}</g>`+close;
 
-    case 'squat': return open+ground+
-      `<g><animateTransform attributeName="transform" type="translate" values="0 0;0 20;0 0" ${SP}/>
-         <circle cx="70" cy="40" r="11" fill="${body}"/>
-         <rect x="61" y="50" width="18" height="38" rx="7" fill="${body}"/>
-         ${bar(48,58)}</g>
-       <rect x="58" y="84" width="9" height="34" rx="4" fill="${body}"><animateTransform attributeName="transform" type="rotate" values="0 62 86;-14 62 86;0 62 86" ${SP}/></rect>
-       <rect x="73" y="84" width="9" height="34" rx="4" fill="${body}"><animateTransform attributeName="transform" type="rotate" values="0 78 86;14 78 86;0 78 86" ${SP}/></rect>
-       <rect x="55" y="116" width="11" height="32" rx="4" fill="${body}"/><rect x="74" y="116" width="11" height="32" rx="4" fill="${body}"/>`+close;
+    /* ---- squat (front, bar on back) ---- */
+    case 'squat': return open+ground()+label('Sit down → drive up')+
+      `${arrowV(128,84,120)}
+       <g><animateTransform attributeName="transform" type="translate" values="0 0;0 24;0 0" ${SP}/>
+         ${head(80,40)}${seg(72,52,72,86,11)}${seg(88,52,88,86,11)}
+         ${seg(62,58,72,54,8)}${seg(98,58,88,54,8)}
+         ${barbell(80,52,32)}</g>
+       <g><animateTransform attributeName="transform" type="rotate" values="0 72 88;-22 72 88;0 72 88" ${SP}/>${seg(72,88,66,120,11)}</g>
+       <g><animateTransform attributeName="transform" type="rotate" values="0 88 88;22 88 88;0 88 88" ${SP}/>${seg(88,88,94,120,11)}</g>
+       ${seg(66,120,62,150,11)}${seg(94,120,98,150,11)}${joint(72,88)}${joint(88,88)}`+close;
 
-    case 'hinge': return open+ground+
-      `<rect x="62" y="92" width="8" height="56" rx="4" fill="${body}"/><rect x="71" y="92" width="8" height="56" rx="4" fill="${body}"/>
-       <g><animateTransform attributeName="transform" type="rotate" values="0 70 94;62 70 94;0 70 94" ${SP}/>
-         <rect x="62" y="52" width="16" height="44" rx="7" fill="${body}"/><circle cx="70" cy="42" r="11" fill="${body}"/>
-         <rect x="66" y="92" width="7" height="34" rx="3" fill="${body}"/>
-         ${bar(120,46)}</g>`+close;
+    /* ---- hinge: deadlift / RDL (side view, bend at hips) ---- */
+    case 'hinge': return open+ground()+label('Hinge at hips → stand tall')+
+      `${seg(80,150,80,96,11)}
+       <g><animateTransform attributeName="transform" type="rotate" values="0 80 96;58 80 96;0 80 96" ${SP}/>
+         ${seg(80,96,80,56,12)}${head(80,46)}
+         ${seg(80,72,80,108,8)}${db(80,110)}</g>
+       ${joint(80,96)}${seg(80,150,72,150,11)}`+close;
 
-    case 'row': return open+ground+
-      `<rect x="40" y="120" width="46" height="6" rx="3" fill="${body}" transform="rotate(8 63 123)"/>
-       <rect x="78" y="96" width="8" height="52" rx="4" fill="${body}" transform="rotate(6 82 122)"/>
-       <g transform="rotate(58 80 60)">
-         <rect x="72" y="52" width="16" height="42" rx="7" fill="${body}"/><circle cx="80" cy="42" r="11" fill="${body}"/></g>
+    /* ---- row (side view, bent over, pull elbow back) ---- */
+    case 'row': return open+ground()+label('Pull weight to hip → lower')+
+      `${seg(80,150,80,108,11)}${joint(80,108)}
+       <g transform="rotate(62 80 100)">${seg(80,100,80,58,12)}${head(80,48)}</g>
+       ${arrowV(118,96,118)}
        <g><animateTransform attributeName="transform" type="translate" values="0 0;0 -22;0 0" ${SP}/>
-         <rect x="60" y="78" width="7" height="34" rx="3" fill="${body}"/>
-         ${bar(108,40)}</g>`+close;
+         ${seg(58,86,58,116,8)}${db(58,118)}</g>`+close;
 
-    case 'pulldown': return open+
-      `<rect x="62" y="92" width="8" height="40" rx="4" fill="${body}"/><rect x="71" y="92" width="8" height="40" rx="4" fill="${body}"/>
-       <rect x="58" y="130" width="26" height="6" rx="3" fill="var(--line)"/>
-       <rect x="61" y="58" width="18" height="40" rx="7" fill="${body}"/><circle cx="70" cy="46" r="11" fill="${body}"/>
-       <g><animateTransform attributeName="transform" type="translate" values="0 0;0 28;0 0" ${SP}/>
-         <rect x="50" y="40" width="7" height="22" rx="3" fill="${body}" transform="rotate(12 53 60)"/>
-         <rect x="83" y="40" width="7" height="22" rx="3" fill="${body}" transform="rotate(-12 87 60)"/>
-         ${bar(30,66)}</g>`+close;
+    /* ---- pulldown / pull-up (front, pull bar down) ---- */
+    case 'pulldown': return open+label('Pull down to chest → control up')+
+      `${seg(72,150,72,108,10)}${seg(88,150,88,108,10)}
+       ${seg(72,108,80,94,11)}${seg(88,108,80,94,11)}${head(80,82)}
+       ${arrowV(124,40,86)}
+       <g><animateTransform attributeName="transform" type="translate" values="0 0;0 30;0 0" ${SP}/>
+         ${seg(60,92,54,52,8)}${seg(100,92,106,52,8)}
+         ${barbell(80,48,36)}${joint(54,52)}${joint(106,52)}</g>`+close;
 
-    case 'curl': return open+ground+
-      `<rect x="62" y="94" width="7" height="52" rx="3" fill="${body}"/><rect x="71" y="94" width="7" height="52" rx="3" fill="${body}"/>
-       <rect x="61" y="52" width="18" height="44" rx="7" fill="${body}"/><circle cx="70" cy="42" r="11" fill="${body}"/>
-       <rect x="52" y="58" width="7" height="22" rx="3" fill="${body}"/><rect x="81" y="58" width="7" height="22" rx="3" fill="${body}"/>
-       <g><animateTransform attributeName="transform" type="rotate" values="0 55 78;-128 55 78;0 55 78" ${SP}/>
-         <rect x="52" y="78" width="7" height="26" rx="3" fill="${body}"/><rect x="47" y="100" width="17" height="9" rx="4" fill="${acc}"/></g>
-       <g><animateTransform attributeName="transform" type="rotate" values="0 85 78;128 85 78;0 85 78" ${SP}/>
-         <rect x="81" y="78" width="7" height="26" rx="3" fill="${body}"/><rect x="76" y="100" width="17" height="9" rx="4" fill="${acc}"/></g>`+close;
+    /* ---- curl (front, rotate forearms up) ---- */
+    case 'curl': return open+ground()+label('Curl up → lower slow')+
+      `${seg(72,150,72,104,10)}${seg(88,150,88,104,10)}
+       ${head(80,42)}${seg(72,54,72,98,12)}${seg(88,54,88,98,12)}
+       ${seg(64,58,72,56,8)}${seg(96,58,88,56,8)}
+       ${arrowV(40,70,104)}
+       <g><animateTransform attributeName="transform" type="rotate" values="0 64 100;-130 64 100;0 64 100" ${SP}/>
+         ${seg(64,100,64,124,8)}${db(64,126)}${joint(64,100)}</g>
+       <g><animateTransform attributeName="transform" type="rotate" values="0 96 100;130 96 100;0 96 100" ${SP}/>
+         ${seg(96,100,96,124,8)}${db(96,126)}${joint(96,100)}</g>`+close;
 
-    case 'lateral': return open+ground+
-      `<rect x="62" y="94" width="7" height="52" rx="3" fill="${body}"/><rect x="71" y="94" width="7" height="52" rx="3" fill="${body}"/>
-       <rect x="61" y="52" width="18" height="44" rx="7" fill="${body}"/><circle cx="70" cy="42" r="11" fill="${body}"/>
-       <g><animateTransform attributeName="transform" type="rotate" values="0 60 58;-95 60 58;0 60 58" ${SP}/>
-         <rect x="40" y="56" width="22" height="7" rx="3" fill="${body}"/><rect x="34" y="52" width="10" height="15" rx="3" fill="${acc}"/></g>
-       <g><animateTransform attributeName="transform" type="rotate" values="0 80 58;95 80 58;0 80 58" ${SP}/>
-         <rect x="78" y="56" width="22" height="7" rx="3" fill="${body}"/><rect x="96" y="52" width="10" height="15" rx="3" fill="${acc}"/></g>`+close;
+    /* ---- lateral raise (front, raise arms out) ---- */
+    case 'lateral': return open+ground()+label('Raise to shoulder height → lower')+
+      `${seg(72,150,72,104,10)}${seg(88,150,88,104,10)}
+       ${head(80,42)}${seg(72,54,72,98,12)}${seg(88,54,88,98,12)}
+       <g><animateTransform attributeName="transform" type="rotate" values="80 72 60;0 72 60;80 72 60" ${SP}/>
+         ${seg(72,60,44,60,8)}${db(40,60)}${joint(72,60)}</g>
+       <g><animateTransform attributeName="transform" type="rotate" values="-80 88 60;0 88 60;-80 88 60" ${SP}/>
+         ${seg(88,60,116,60,8)}${db(120,60)}${joint(88,60)}</g>`+close;
 
-    case 'fly': return open+ground+
-      `<rect x="62" y="94" width="7" height="52" rx="3" fill="${body}"/><rect x="71" y="94" width="7" height="52" rx="3" fill="${body}"/>
-       <rect x="61" y="52" width="18" height="44" rx="7" fill="${body}"/><circle cx="70" cy="42" r="11" fill="${body}"/>
-       <g><animateTransform attributeName="transform" type="rotate" values="-70 62 58;-15 62 58;-70 62 58" ${SP}/>
-         <rect x="34" y="55" width="28" height="7" rx="3" fill="${body}"/><rect x="30" y="51" width="9" height="15" rx="3" fill="${acc}"/></g>
-       <g><animateTransform attributeName="transform" type="rotate" values="70 78 58;15 78 58;70 78 58" ${SP}/>
-         <rect x="78" y="55" width="28" height="7" rx="3" fill="${body}"/><rect x="101" y="51" width="9" height="15" rx="3" fill="${acc}"/></g>`+close;
+    /* ---- fly (front, hug motion) ---- */
+    case 'fly': return open+ground()+label('Open wide → squeeze together')+
+      `${seg(72,150,72,104,10)}${seg(88,150,88,104,10)}
+       ${head(80,42)}${seg(72,54,72,98,12)}${seg(88,54,88,98,12)}
+       <g><animateTransform attributeName="transform" type="rotate" values="-75 72 60;-15 72 60;-75 72 60" ${SP}/>
+         ${seg(72,60,40,60,8)}${db(36,60)}${joint(72,60)}</g>
+       <g><animateTransform attributeName="transform" type="rotate" values="75 88 60;15 88 60;75 88 60" ${SP}/>
+         ${seg(88,60,120,60,8)}${db(124,60)}${joint(88,60)}</g>`+close;
 
-    case 'pushdown': return open+ground+
-      `<rect x="62" y="94" width="7" height="52" rx="3" fill="${body}"/><rect x="71" y="94" width="7" height="52" rx="3" fill="${body}"/>
-       <rect x="61" y="52" width="18" height="44" rx="7" fill="${body}"/><circle cx="70" cy="42" r="11" fill="${body}"/>
-       <rect x="52" y="56" width="7" height="24" rx="3" fill="${body}"/><rect x="81" y="56" width="7" height="24" rx="3" fill="${body}"/>
-       <g><animateTransform attributeName="transform" type="rotate" values="-78 55 78;0 55 78;-78 55 78" ${SP}/>
-         <rect x="52" y="78" width="7" height="26" rx="3" fill="${body}"/></g>
-       <g><animateTransform attributeName="transform" type="rotate" values="78 85 78;0 85 78;78 85 78" ${SP}/>
-         <rect x="81" y="78" width="7" height="26" rx="3" fill="${body}"/></g>
-       <rect x="48" y="100" width="44" height="6" rx="3" fill="${acc}"><animateTransform attributeName="transform" type="translate" values="0 -22;0 0;0 -22" ${SP}/></rect>`+close;
+    /* ---- tricep pushdown / extension (front, extend forearms down) ---- */
+    case 'pushdown': return open+ground()+label('Extend down → control up')+
+      `${seg(72,150,72,104,10)}${seg(88,150,88,104,10)}
+       ${head(80,42)}${seg(72,54,72,98,12)}${seg(88,54,88,98,12)}
+       ${seg(64,58,72,56,8)}${seg(96,58,88,56,8)}
+       ${arrowV(40,80,116)}
+       <g><animateTransform attributeName="transform" type="rotate" values="-75 64 100;0 64 100;-75 64 100" ${SP}/>${seg(64,100,64,124,8)}${joint(64,100)}</g>
+       <g><animateTransform attributeName="transform" type="rotate" values="75 96 100;0 96 100;75 96 100" ${SP}/>${seg(96,100,96,124,8)}${joint(96,100)}</g>
+       <g><animateTransform attributeName="transform" type="translate" values="0 -22;0 0;0 -22" ${SP}/>${barbell(80,124,24)}</g>`+close;
 
-    case 'lunge': return open+ground+
-      `<g><animateTransform attributeName="transform" type="translate" values="0 0;0 16;0 0" ${SP}/>
-         <circle cx="66" cy="44" r="11" fill="${body}"/><rect x="57" y="54" width="18" height="40" rx="7" fill="${body}"/></g>
-       <rect x="48" y="90" width="9" height="32" rx="4" fill="${body}" transform="rotate(28 52 92)"/>
-       <rect x="40" y="118" width="9" height="30" rx="4" fill="${body}"/>
-       <rect x="74" y="90" width="9" height="30" rx="4" fill="${body}" transform="rotate(-22 78 92)"/>
-       <rect x="86" y="116" width="9" height="32" rx="4" fill="${body}"/>`+close;
+    /* ---- lunge / split squat (side, drop back knee) ---- */
+    case 'lunge': return open+ground()+label('Drop straight down → drive up')+
+      `<g><animateTransform attributeName="transform" type="translate" values="0 0;0 18;0 0" ${SP}/>
+         ${head(74,42)}${seg(74,54,74,92,11)}
+         ${seg(64,60,56,76,8)}${db(54,78)}${seg(84,60,92,76,8)}${db(94,78)}</g>
+       ${seg(56,94,52,124,11)}${seg(52,124,44,150,11)}
+       ${seg(92,94,98,122,11)}${seg(98,122,96,150,11)}${joint(74,92)}`+close;
 
-    case 'calf': return open+ground+
-      `<g><animateTransform attributeName="transform" type="translate" values="0 0;0 -12;0 0" dur="1.4s" repeatCount="indefinite" calcMode="spline" keyTimes="0;0.5;1" keySplines="0.4 0 0.2 1;0.4 0 0.2 1"/>
-         <circle cx="70" cy="40" r="11" fill="${body}"/><rect x="61" y="50" width="18" height="40" rx="7" fill="${body}"/>
-         <rect x="50" y="54" width="7" height="30" rx="3" fill="${body}"/><rect x="83" y="54" width="7" height="30" rx="3" fill="${body}"/>
-         <rect x="58" y="88" width="9" height="40" rx="4" fill="${body}"/><rect x="73" y="88" width="9" height="40" rx="4" fill="${body}"/>
-         <rect x="54" y="126" width="16" height="6" rx="3" fill="${acc}"/><rect x="70" y="126" width="16" height="6" rx="3" fill="${acc}"/></g>`+close;
+    /* ---- calf raise (front, rise on toes) ---- */
+    case 'calf': return open+ground()+label('Rise onto toes → lower heels')+
+      `${arrowV(118,96,108)}
+       <g><animateTransform attributeName="transform" type="translate" values="0 0;0 -14;0 0" dur="1.6s" repeatCount="indefinite" calcMode="spline" keyTimes="0;0.5;1" keySplines="0.42 0 0.58 1;0.42 0 0.58 1"/>
+         ${head(80,40)}${seg(72,52,72,92,11)}${seg(88,52,88,92,11)}
+         ${seg(62,58,72,54,8)}${seg(98,58,88,54,8)}${db(60,58)}${db(100,58)}
+         ${seg(72,92,70,150,11)}${seg(88,92,90,150,11)}</g>`+close;
 
+    /* ---- lying leg curl (side, curl heel to glute) ---- */
     case 'legcurl': return open+
-      `<line x1="28" y1="96" x2="112" y2="96" stroke="var(--line)" stroke-width="3"/>
-       <circle cx="40" cy="86" r="9" fill="${body}"/><rect x="40" y="84" width="50" height="13" rx="6" fill="${body}"/>
-       <g><animateTransform attributeName="transform" type="rotate" values="0 90 92;-95 90 92;0 90 92" ${SP}/>
-         <rect x="86" y="84" width="30" height="9" rx="4" fill="${body}"/><rect x="110" y="80" width="10" height="16" rx="4" fill="${acc}"/></g>`+close;
+      `<rect x="24" y="110" width="100" height="9" rx="4" fill="var(--line)"/>${label('Curl heel up → lower')}
+       ${head(38,100)}${seg(48,104,96,104,15,skin)}${joint(96,104)}
+       ${arrowV(132,76,104)}
+       <g><animateTransform attributeName="transform" type="rotate" values="0 96 104;-100 96 104;0 96 104" ${SP}/>
+         ${seg(96,104,124,104,9)}${db(126,104)}</g>`+close;
 
-    case 'core': return open+
-      `<line x1="30" y1="120" x2="112" y2="120" stroke="var(--line)" stroke-width="3"/>
-       <rect x="58" y="108" width="40" height="10" rx="4" fill="${body}"/>
-       <g><animateTransform attributeName="transform" type="rotate" values="0 56 112;-38 56 112;0 56 112" ${SP}/>
-         <rect x="52" y="92" width="14" height="22" rx="6" fill="${body}"/><circle cx="48" cy="86" r="9" fill="${body}"/></g>
-       <rect x="92" y="100" width="22" height="8" rx="4" fill="${body}" transform="rotate(-30 96 112)"/>`+close;
+    /* ---- core: plank / crunch / leg raise ---- */
+    case 'core': return open+ground(150)+label('Brace core → controlled reps')+
+      `${seg(50,140,104,140,13,skin)}
+       <g><animateTransform attributeName="transform" type="rotate" values="0 104 140;-34 104 140;0 104 140" ${SP}/>
+         ${seg(104,140,118,118,12)}${head(122,108)}</g>
+       <g><animateTransform attributeName="transform" type="rotate" values="0 50 140;30 50 140;0 50 140" ${SP}/>
+         ${seg(50,140,34,122,10)}</g>${joint(104,140)}${joint(50,140)}`+close;
 
-    default: return open+ground+
-      `<circle cx="70" cy="40" r="11" fill="${acc}"/><rect x="61" y="50" width="18" height="44" rx="7" fill="${body}"/>
-       <rect x="44" y="56" width="22" height="6" rx="3" fill="${acc}"><animateTransform attributeName="transform" type="rotate" values="0 66 58;-30 66 58;0 66 58" dur="1.8s" repeatCount="indefinite"/></rect>
-       <rect x="74" y="56" width="22" height="6" rx="3" fill="${acc}"><animateTransform attributeName="transform" type="rotate" values="0 74 58;30 74 58;0 74 58" dur="1.8s" repeatCount="indefinite"/></rect>
-       <rect x="58" y="92" width="9" height="40" rx="4" fill="${body}"/><rect x="73" y="92" width="9" height="40" rx="4" fill="${body}"/>`+close;
+    /* ---- generic fallback ---- */
+    default: return open+ground()+label('Controlled reps · full range')+
+      `${head(80,42)}${seg(72,54,72,98,12)}${seg(88,54,88,98,12)}
+       ${seg(72,98,68,150,11)}${seg(88,98,92,150,11)}
+       <g><animateTransform attributeName="transform" type="rotate" values="0 72 60;-34 72 60;0 72 60" ${SP}/>${seg(72,60,52,72,8)}${db(50,74)}${joint(72,60)}</g>
+       <g><animateTransform attributeName="transform" type="rotate" values="0 88 60;34 88 60;0 88 60" ${SP}/>${seg(88,60,108,72,8)}${db(110,74)}${joint(88,60)}</g>`+close;
   }
 }
 
@@ -1197,8 +1621,8 @@ function formAnimation(name){
 function startSession(idx){
   const d=S.program.split[idx];
   S.active={name:d.name,idx,date:todayStr(),started:Date.now(),
-    exercises:d.exercises.map(e=>e.warmup
-      ? {name:e.name,muscle:'warmup',cue:e.cue,warmup:true,items:e.items,done:false}
+    exercises:d.exercises.map(e=>(e.warmup||e.cardio)
+      ? {name:e.name,muscle:e.muscle,cue:e.cue,warmup:e.warmup,cardio:e.cardio,items:e.items,done:false}
       : {name:e.name,muscle:e.muscle,cue:e.cue,rest:e.rest,target:e.reps,
          sets:Array.from({length:e.sets},()=>({weight:e.weight,reps:'',type:'normal',done:false}))}),
     difficulty:{start:null,mid:null,end:null}};
@@ -1214,11 +1638,12 @@ function renderActiveSession(){
   h+=diffPicker('start','How do you feel starting?');
 
   a.exercises.forEach((e,ei)=>{
-    if(e.warmup){
+    if(e.warmup||e.cardio){
+      const icon=e.cardio?'🏃':'🔥';const tag=e.cardio?'Cardio finisher':'Prime the joints — ~8 min';
       h+=`<div class="ex-card" style="border-color:var(--acc2)">
-        <div class="ex-head"><div><div class="nm">🔥 ${e.name}</div><div class="meta">Prime the joints — ~8 min</div></div>
+        <div class="ex-head"><div><div class="nm">${icon} ${e.name}</div><div class="meta">${tag}</div></div>
         <button class="set-done ${e.done?'on':''}" onclick="toggleWarmup(${ei})"><svg viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7"/></svg></button></div>
-        <div style="padding:4px 16px 14px">${e.items.map(it=>`<div style="display:flex;gap:8px;padding:5px 0;font-size:13px;color:var(--txt2)"><span style="color:var(--acc)">•</span>${it}</div>`).join('')}</div>
+        <div style="padding:4px 16px 14px">${(e.items||[]).map(it=>`<div style="display:flex;gap:8px;padding:5px 0;font-size:13px;color:var(--txt2)"><span style="color:var(--acc)">•</span>${it}</div>`).join('')}</div>
       </div>`;
       return;
     }
@@ -1489,8 +1914,12 @@ function renderNutrition(){
     </div>
   </div>`;
 
-  if(logged.length){h+=`<div class="card"><div class="card-h"><div class="t">Logged today</div></div>`;
-    logged.forEach((f,i)=>h+=`<div class="food-log-item"><div><div class="fn">${f.name}</div><div class="fm">${f.protein||0}p · ${f.carbs||0}c · ${f.fat||0}f</div></div><div class="fc">${f.cals}</div><button onclick="delFood(${i})" style="color:var(--txt3);font-size:18px;padding:0 4px">×</button></div>`);
+  if(logged.length){
+    const verdict=dayFoodVerdict(logged);
+    h+=`<div class="card"><div class="card-h"><div class="t">Logged today</div></div>`;
+    if(verdict)h+=`<div style="background:var(--bg3);border-left:3px solid ${verdict.c};border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--txt)">${verdict.t}</div>`;
+    logged.forEach((f,i)=>{const q=foodQuality(f);
+      h+=`<div class="food-log-item"><div style="display:flex;gap:8px;align-items:center"><span title="${q.label}" style="font-size:12px">${q.dot}</span><div><div class="fn">${f.name}</div><div class="fm" style="color:${q.color}">${q.label} · ${f.protein||0}p · ${f.carbs||0}c · ${f.fat||0}f</div></div></div><div class="fc">${f.cals}</div><button onclick="delFood(${i})" style="color:var(--txt3);font-size:18px;padding:0 4px">×</button></div>`;});
     h+=`</div>`;}
 
   h+=`<div class="card-h" style="margin:18px 4px 10px"><div class="t">Meal Ideas · ${goalLabel}</div></div>`;
@@ -1506,13 +1935,49 @@ function renderNutrition(){
   $('#s_nutrition').innerHTML=h;
 }
 function logFood(){ openFoodForm({}); }
+// Grade a food good / ok / poor from its macros + name keywords.
+function foodQuality(f){
+  const n=(f.name||'').toLowerCase();
+  const cals=+f.cals||0, p=+f.protein||0, c=+f.carbs||0, fat=+f.fat||0, sugar=+f.sugar||0;
+  let score=0;
+  // protein density is good
+  const pPerCal = cals?(p*4)/cals:0;
+  if(pPerCal>0.3)score+=2; else if(pPerCal>0.18)score+=1;
+  // keyword signals
+  const junk=/candy|soda|cola|chips|cookie|donut|doughnut|cake|ice cream|fries|fried|chocolate bar|gummy|skittles|sour|pop.?tart|cereal bar|energy drink|slushie|milkshake/;
+  const whole=/chicken|turkey|salmon|tuna|fish|egg|beef|steak|rice|oat|quinoa|broccoli|spinach|vegetable|veggie|salad|beans|lentil|yogurt|greek|fruit|apple|banana|berry|nuts|almond|potato|sweet potato/;
+  if(junk.test(n))score-=2;
+  if(whole.test(n))score+=2;
+  // sugar (if available) and calorie density
+  if(sugar>20)score-=1;
+  if(cals>400 && p<10 && fat>20)score-=1; // calorie-dense, low protein, high fat
+  if(score>=2)return {label:'Solid choice',color:'var(--green)',dot:'🟢'};
+  if(score<=-1)return {label:'Treat — keep it occasional',color:'var(--red)',dot:'🔴'};
+  return {label:'Fine in moderation',color:'var(--amber)',dot:'🟡'};
+}
+// One-line read on the whole day's eating.
+function dayFoodVerdict(logged){
+  if(!logged.length)return '';
+  const grades=logged.map(foodQuality);
+  const good=grades.filter(g=>g.color==='var(--green)').length;
+  const bad=grades.filter(g=>g.color==='var(--red)').length;
+  const totalP=logged.reduce((t,f)=>t+ +(f.protein||0),0);
+  if(bad>=2 && bad>=good)return {t:`You've logged ${bad} treat-type foods today. One's fine — try swapping the rest for something with protein.`,c:'var(--amber)'};
+  if(good>=2 && bad===0)return {t:`Clean day so far — mostly whole foods${totalP>80?' and protein is on point':''}. Keep it up.`,c:'var(--green)'};
+  if(good===0 && logged.length>=2)return {t:`Not much whole food yet today. Aim to build meals around a protein + a veg or fruit.`,c:'var(--amber)'};
+  return {t:`Balanced mix today. ${totalP<60?'Could use more protein.':'Protein looking good.'}`,c:'var(--txt2)'};
+}
 function openFoodForm(pre){
   pre=pre||{}; scanBusy=false;
   const esc=s=>(s||'').replace(/"/g,'&quot;');
   let banner='';
   if(pre.notFound) banner='<p class="small" style="color:var(--amber);margin-bottom:12px">Not found in the database — enter it manually.</p>';
   else if(pre.offline) banner='<p class="small" style="color:var(--red);margin-bottom:12px">Couldn\'t reach the food database. Check your connection or enter manually.</p>';
-  else if(pre.per) banner=`<p class="small" style="color:var(--acc);margin-bottom:12px">✓ Found! Values ${pre.per}. Adjust to your portion.</p>`;
+  else if(pre.per){
+    const q=foodQuality(pre);
+    banner=`<p class="small" style="color:var(--acc);margin-bottom:6px">✓ Found! Values ${pre.per}. Adjust to your portion.</p>
+      <div style="background:var(--bg3);border-left:3px solid ${q.color};border-radius:8px;padding:9px 11px;margin-bottom:12px;font-size:13px">${q.dot} <b style="color:${q.color}">${q.label}</b></div>`;
+  }
   modal(`<h3>Log food</h3>
     <button class="btn ghost" style="margin-bottom:16px" onclick="startScanner()">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M6 12h12"/></svg>
@@ -1608,10 +2073,24 @@ async function loadPhotos(){await openPhotoDB();if(!photoDB)return;
   req.onsuccess=()=>{const photos=req.result.sort((a,b)=>b.id-a.id);const g=$('#photoGrid');if(!g)return;
     const add=g.querySelector('.photo-add');g.innerHTML='';g.appendChild(add);
     photos.forEach(p=>{const d=el('div','ph',`<img src="${p.data}"><div class="pd">${new Date(p.date).toLocaleDateString('default',{month:'short',day:'numeric'})}</div>`);
-      d.onclick=()=>modal(`<h3>${new Date(p.date).toLocaleDateString('default',{month:'long',day:'numeric',year:'numeric'})}</h3><img src="${p.data}" style="border-radius:14px;width:100%;margin-bottom:14px"><button class="btn ghost" style="background:var(--redbg);color:var(--red)" onclick="delPhoto(${p.id})">Delete photo</button><button class="btn ghost" style="margin-top:10px" onclick="closeModal()">Close</button>`);
+      d.onclick=()=>modal(`<h3>${new Date(p.date).toLocaleDateString('default',{month:'long',day:'numeric',year:'numeric'})}</h3><img src="${p.data}" style="border-radius:14px;width:100%;margin-bottom:14px">${S.settings.geminiKey?`<button class="btn" onclick="photoFeedback('${p.id}')">⚡ Get AI build feedback</button>`:`<p class="small" style="text-align:center;color:var(--txt2);margin-bottom:12px">Add a Gemini key in Settings to get AI feedback on your physique.</p>`}<button class="btn ghost" style="background:var(--redbg);color:var(--red);margin-top:10px" onclick="delPhoto(${p.id})">Delete photo</button><button class="btn ghost" style="margin-top:10px" onclick="closeModal()">Close</button>`);
       g.appendChild(d);});};
 }
 async function delPhoto(id){await openPhotoDB();const tx=photoDB.transaction('p','readwrite');tx.objectStore('p').delete(id);tx.oncomplete=()=>{closeModal();loadPhotos();};}
+async function photoFeedback(id){
+  await openPhotoDB();const tx=photoDB.transaction('p','readonly');
+  const req=tx.objectStore('p').get(+id);
+  req.onsuccess=async()=>{
+    const p=req.result;if(!p)return;
+    const b64=(p.data||'').split(',')[1];
+    modal(`<h3>⚡ Build Feedback</h3><p style="color:var(--txt2)">Coach is looking at your photo…</p>`);
+    const pri=(S.profile.priority||[]).map(m=>MUSCLE_LABELS[m]).join(', ')||'balanced development';
+    const prompt=`You are this person's strength coach looking at their physique progress photo. They are ${S.profile.age}, ${S.profile.weight}lb, goal=${S.profile.goal}, and want to grow: ${pri}. Talk like a real coach — warm, direct, encouraging but honest. In 3-5 sentences: what looks like it's developing well, what's lagging and should get priority, and one concrete training or nutrition tip. No bullet points, no AI disclaimers, just talk to them like a person.`;
+    try{const fb=await geminiCall(prompt,b64);
+      modal(`<h3>⚡ Build Feedback</h3><div style="background:var(--bg3);border-radius:12px;padding:14px;line-height:1.6;color:var(--txt)">${(fb||'Looking solid — keep training consistently.').replace(/\n/g,'<br>')}</div><button class="btn ghost" style="margin-top:16px" onclick="closeModal()">Got it</button>`);
+    }catch(e){modal(`<h3>⚡ Build Feedback</h3><p style="color:var(--red)">${aiErrorMsg(e)}</p><button class="btn ghost" style="margin-top:14px" onclick="closeModal()">Close</button>`);}
+  };
+}
 
 /* ============================================================
    SETTINGS

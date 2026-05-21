@@ -1,4 +1,4 @@
-const CACHE = 'forge-v2';
+const CACHE = 'forge-v5';
 const ASSETS = ['./','./index.html','./app.js','./manifest.json',
   './icon-180.png','./icon-192.png','./icon-512.png'];
 self.addEventListener('install', e => {
