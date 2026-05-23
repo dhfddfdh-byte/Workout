@@ -9,11 +9,24 @@ const DEFAULT_STATE = {
   logs:[], favorites:[], prs:{},
   nutrition:{plan:null, foodLog:[]},
   body:{weight:[], measurements:[], photos:[]},
-  settings:{geminiKey:'', notifications:true},
-  active:null // in-progress workout session
+  settings:{geminiKey:'', notifications:true, progressiveOverload:false, lastAutoAI:null},
+  skips:[],            // legacy
+  skipReasons:{},      // date -> reason the user gave for skipping
+  skipAck:{},          // date -> true once acknowledged (stops nagging)
+  coachSeen:{},        // dedupe: which skip dates the coach has already asked about
+  active:null          // in-progress workout session
 };
 let S = load();
-function load(){try{return Object.assign({},DEFAULT_STATE,JSON.parse(localStorage.getItem('forge')||'{}'));}catch(e){return {...DEFAULT_STATE};}}
+function load(){
+  try{
+    const s=Object.assign({},DEFAULT_STATE,JSON.parse(localStorage.getItem('forge')||'{}'));
+    // merge nested defaults so older saves gain new fields
+    s.settings=Object.assign({},DEFAULT_STATE.settings,s.settings||{});
+    if(!Array.isArray(s.skips))s.skips=[];
+    if(!s.coachSeen)s.coachSeen={};
+    return s;
+  }catch(e){return {...DEFAULT_STATE};}
+}
 function save(){localStorage.setItem('forge',JSON.stringify(S));}
 
 /* ---------- tiny helpers ---------- */
@@ -725,13 +738,14 @@ function barbellPlatesUpTo(max){
   return out.length?out:[max];
 }
 function availableWeights(ex){
+  const name=ex.n||ex.name||'';            // library entries use .n, program slots use .name
   const dbs=(S.profile.dumbbells||[]).slice().sort((a,b)=>a-b);
   const kbs=(S.profile.kettlebells||[]).slice().sort((a,b)=>a-b);
   const eq=S.profile.equipment||[];
   const bbMax=+S.profile.barbellMax||0;
-  if(/kettlebell|swing/i.test(ex.n) && kbs.length) return kbs;
-  if(/dumbbell|db |goblet|hammer|lateral|fly|curl|raise|farmer|arnold|rdl/i.test(ex.n) && dbs.length) return dbs;
-  if((eq.includes('barbell')||eq.includes('smith')||eq.includes('ezbar')||eq.includes('curlbar')) && /barbell|bench|squat|deadlift|press|row|curl|skull|close-grip/i.test(ex.n)){
+  if(/kettlebell|swing/i.test(name) && kbs.length) return kbs;
+  if(/dumbbell|db |goblet|hammer|lateral|fly|curl|raise|farmer|arnold|rdl/i.test(name) && dbs.length) return dbs;
+  if((eq.includes('barbell')||eq.includes('smith')||eq.includes('ezbar')||eq.includes('curlbar')) && /barbell|bench|squat|deadlift|press|row|curl|skull|close-grip/i.test(name)){
     if(bbMax>0) return barbellPlatesUpTo(bbMax);            // capped at real set max
     return barbellPlatesUpTo(135);                          // conservative default if unknown
   }
@@ -829,17 +843,174 @@ function repsForMuscle(muscle,base){
   if(['biceps','triceps'].includes(muscle)) return base+2;
   return base;
 }
+// Convert a target rep number into a working RANGE {lo,hi} for double-progression.
+// e.g. target 10 -> 8-10, target 12 -> 10-12, target 15 -> 12-15
+function repRangeFor(target){
+  const hi=target;
+  const lo=Math.max(5, hi - (hi>=12?3:2));
+  return {lo,hi};
+}
+// How to show the rep goal: a range when progressive overload is on, else single.
+function repLabel(e){
+  if(S.settings.progressiveOverload){
+    const r=e.repRange||repRangeFor(e.reps||10);
+    return `${r.lo}–${r.hi}`;
+  }
+  return `${e.reps}`;
+}
+/* ============================================================
+   PROGRESSIVE OVERLOAD  (double-progression — exactly the
+   method from the video: hit the top of the rep range on all
+   sets -> add weight; fall below the bottom -> drop weight;
+   in between -> keep weight and chase more reps. Only ever
+   moves based on what you ACTUALLY lifted last session.)
+   ============================================================ */
+// Smallest sensible weight increment for an exercise given owned gear.
+function weightStep(ex){
+  const avail=availableWeights(ex);
+  if(!avail||avail.length<2)return null;
+  // smallest gap between adjacent owned weights (e.g. 5lb plates, 5lb DB jumps)
+  let step=Infinity;
+  for(let i=1;i<avail.length;i++)step=Math.min(step,avail[i]-avail[i-1]);
+  return isFinite(step)?step:null;
+}
+// snap a desired weight to the closest weight the user actually owns
+function snapToOwned(ex,desired){
+  const avail=availableWeights(ex);
+  if(!avail||!avail.length)return null;
+  let best=avail[0];
+  for(const w of avail){ if(Math.abs(w-desired)<Math.abs(best-desired))best=w; }
+  return best;
+}
+// Decide the next-session weight for one exercise from how the last sets went.
+// Returns {weight, action:'up'|'down'|'hold', note}
+function progressExercise(ex, loggedSets){
+  const range=ex.repRange||repRangeFor(ex.reps||10);
+  const done=(loggedSets||[]).filter(s=>s.done&&+s.reps>0);
+  if(!done.length||ex.weight==null)return null; // bodyweight or unlogged: nothing to move
+  const reps=done.map(s=>+s.reps);
+  const minReps=Math.min(...reps), maxReps=Math.max(...reps);
+  const hitTopAll=reps.every(r=>r>=range.hi);     // every set reached upper limit
+  const belowFloor=minReps<range.lo;               // a set dropped under the lower limit
+  const avail=availableWeights(ex);
+  if(!avail||!avail.length)return null;
+  const step=weightStep(ex)||0;
+  if(hitTopAll){
+    // earned the increase
+    const next=snapToOwned(ex, ex.weight+ (step||Math.max(2.5,ex.weight*0.05)) );
+    if(next>ex.weight)return {weight:next, action:'up', note:`Hit ${range.hi} on every set — bumping to ${next}lb.`};
+    return {weight:ex.weight, action:'hold', note:`Maxed your reps but no heavier weight available — add reps or a set.`};
+  }
+  if(belowFloor){
+    // too heavy — back off so you're training in range
+    const next=snapToOwned(ex, ex.weight-(step||Math.max(2.5,ex.weight*0.05)));
+    if(next<ex.weight)return {weight:next, action:'down', note:`Dropped below ${range.lo} reps — easing to ${next}lb so you stay in range.`};
+    return {weight:ex.weight, action:'hold', note:`Tough set — keep this weight and build the reps back up.`};
+  }
+  return {weight:ex.weight, action:'hold', note:`In range (${minReps}-${maxReps}) — same weight, push for ${range.hi} next time.`};
+}
+// After a logged workout, walk its exercises and update the matching
+// program slots' starting weights for next time. Returns a summary list.
+function applyProgressiveOverload(log){
+  if(!S.settings.progressiveOverload||!S.program)return [];
+  const changes=[];
+  const day=S.program.split.find(d=>d.name===log.name);
+  if(!day)return [];
+  log.exercises.forEach(le=>{
+    if(le.warmup||le.cardio||!le.sets)return;
+    const slot=day.exercises.find(e=>e.name===le.name);
+    if(!slot)return;
+    const res=progressExercise(slot, le.sets);
+    if(!res)return;
+    if(res.action!=='hold' && res.weight!=null && res.weight!==slot.weight){
+      const from=slot.weight;
+      slot.weight=res.weight;
+      changes.push({name:le.name, from, to:res.weight, action:res.action, note:res.note});
+    }
+  });
+  if(changes.length)save();
+  return changes;
+}
+// set a stalled lift's program weight down to its deload weight, snapped to owned
+function applyDeload(name,deloadW){
+  if(!S.program)return;
+  S.program.split.forEach(d=>d.exercises.forEach(e=>{
+    if(e.name===name && e.weight!=null){
+      const snapped=snapToOwned(e,deloadW);
+      e.weight=snapped!=null?snapped:deloadW;
+    }
+  }));
+  save();toast(`${name} deloaded to ${deloadW}lb — build it back up`,'good');
+}
+// Stall detection: a lift that's been stuck at the same top weight for 3+
+// sessions without hitting its rep target is plateaued — prescribe a deload
+// (drop ~10%, build back) so progress restarts instead of grinding a wall.
+function detectStalls(){
+  const byEx={};
+  S.logs.slice(-12).forEach(l=>{
+    (l.exercises||[]).forEach(e=>{
+      if(e.warmup||e.cardio||!e.sets)return;
+      const done=e.sets.filter(s=>s.done&&+s.weight>0&&+s.reps>0);
+      if(!done.length)return;
+      const topW=Math.max(...done.map(s=>+s.weight));
+      const maxRepsAtTop=Math.max(...done.filter(s=>+s.weight===topW).map(s=>+s.reps));
+      (byEx[e.name]=byEx[e.name]||[]).push({date:l.date,topW,maxReps:maxRepsAtTop,target:(e.repRange?e.repRange.hi:e.reps)||10});
+    });
+  });
+  const stalls=[];
+  for(const name in byEx){
+    const h=byEx[name];
+    if(h.length<3)continue;
+    const last3=h.slice(-3);
+    const sameW=last3.every(x=>x.topW===last3[0].topW);
+    const neverHitTarget=last3.every(x=>x.maxReps<x.target);
+    if(sameW&&neverHitTarget){
+      const deloadW=Math.round(last3[0].topW*0.9);
+      stalls.push({name, weight:last3[0].topW, sessions:last3.length, deloadW,
+        note:`Stuck at ${last3[0].topW}lb for ${last3.length} sessions without hitting your rep target. Deload to ~${deloadW}lb, nail your reps clean, then build back — you'll blow past the old number.`});
+    }
+  }
+  return stalls;
+}
 // how many WORK exercises fit a session of N minutes (after ~8 min warmup)
 function exercisesForTime(min){
   const usable=Math.max(12,min-8);
   return Math.max(3,Math.min(8,Math.round(usable/9)));
 }
-function warmupFor(day){
-  const lower=day.muscles.some(m=>['quads','hamstrings','glutes','calves'].includes(m));
-  const items=lower
-    ? ['3-5 min easy cardio (march, jog, or bike)','Leg swings × 10 each','Bodyweight squats × 15','Glute bridges × 15','2 light ramp-up sets of your first lift']
-    : ['3-5 min easy cardio / arm circles','Band or towel pull-aparts × 15','Scapular push-ups × 10','Shoulder rotations × 10 each','2 light ramp-up sets of your first lift'];
-  return {name:'Warm-up',muscle:'warmup',cue:'Raise your heart rate and prime the joints you\'re about to train.',warmup:true,items,sets:1,reps:'~8 min',rest:0,weight:null};
+// Build a warm-up tailored to the actual exercises chosen for the day:
+// general pulse-raiser + joint prep specific to the movements + ramp-up
+// sets for the first loaded compound so you ease into the working weight.
+function warmupFor(day, exercises){
+  const names=(exercises||[]).map(e=>(e.name||'').toLowerCase()).join(' ');
+  const items=['3-5 min easy cardio to raise your heart rate (march, jog, jump rope, or bike)'];
+  // movement-specific joint prep based on what's actually in the session
+  if(/squat|lunge|leg press|split squat|step-up/.test(names)){
+    items.push('Hip circles × 10 each way + 10 deep bodyweight squats');
+    items.push('Leg swings × 10 each leg (front-back and side-side)');
+  }
+  if(/deadlift|rdl|romanian|hinge|good morning|hip thrust|swing/.test(names)){
+    items.push('Cat-cow × 8 and 10 hip hinges with just bodyweight');
+  }
+  if(/bench|push-up|chest press|dip|fly|close-grip/.test(names)){
+    items.push('Band/towel pull-aparts × 15 and 10 slow push-ups to prep shoulders');
+  }
+  if(/overhead|shoulder press|arnold|lateral|upright|military/.test(names)){
+    items.push('Shoulder dislocates with a towel/band × 10 and arm circles × 10 each way');
+  }
+  if(/row|pulldown|pull-up|chin|curl/.test(names)){
+    items.push('Band pull-aparts × 15 and 10 scapular pulls/shrugs to wake up the back');
+  }
+  if(/calf/.test(names)) items.push('10 slow bodyweight calf raises');
+  // ramp-up sets for the FIRST loaded compound of the day
+  const firstLoaded=(exercises||[]).find(e=>!e.warmup&&!e.cardio&&e.weight!=null);
+  if(firstLoaded){
+    const w=firstLoaded.weight;
+    const s1=Math.max(0,Math.round(w*0.5/5)*5), s2=Math.max(0,Math.round(w*0.75/5)*5);
+    items.push(`Ramp-up sets for ${firstLoaded.name}: 1×8 @ ${s1||'bar/light'}lb, then 1×5 @ ${s2||'light'}lb before your working sets at ${w}lb`);
+  } else {
+    items.push('2 light practice sets of your first exercise to groove the movement');
+  }
+  return {name:'Warm-up',muscle:'warmup',cue:'Tailored to today\'s lifts — raise your heart rate, prep the exact joints you\'ll use, then ramp into your working weight.',warmup:true,items,sets:1,reps:'~6-8 min',rest:0,weight:null};
 }
 function cardioFinisher(){
   const eq=S.profile.equipment||[];
@@ -870,7 +1041,7 @@ function buildLocalProgram(){
       const reps=repsForMuscle(m,scheme.reps);
       exercises.push({name:ex.n,muscle:m,cue:ex.c,
         sets:scheme.sets+(isPriority?1:0), // priority = +1 set
-        reps,
+        reps, repRange:repRangeFor(reps),
         weight:suggestStartWeight(ex,m,reps),rest:scheme.rest,priority:isPriority});
     });
     // 2) SECOND pass: add an extra exercise for priority muscles, time permitting
@@ -879,12 +1050,12 @@ function buildLocalProgram(){
         if(exercises.length>=maxEx)return;
         const ex=pickExercise(m,used,dayIdx+1);if(!ex||used.has(ex.n))return;used.add(ex.n);
         const reps=repsForMuscle(m,scheme.reps);
-        exercises.push({name:ex.n,muscle:m,cue:ex.c,sets:scheme.sets,reps,
+        exercises.push({name:ex.n,muscle:m,cue:ex.c,sets:scheme.sets,reps,repRange:repRangeFor(reps),
           weight:suggestStartWeight(ex,m,reps),rest:scheme.rest,priority:true});
       });
     }
     const trimmed=exercises.slice(0,maxEx);
-    const out=[warmupFor(d),...trimmed];
+    const out=[warmupFor(d,trimmed),...trimmed];
     if(wantsCardio)out.push(cardioFinisher());
     return {name:d.name,exercises:out};
   })};
@@ -940,10 +1111,17 @@ async function buildProgram(){
 const GEMINI_MODEL='gemini-2.5-flash';
 const GEMINI_URL='https://generativelanguage.googleapis.com/v1beta/models/'+GEMINI_MODEL+':generateContent?key=';
 const COACH_PERSONA=`You are a real strength coach texting with your client — talk like an actual human, not an AI assistant. Warm, direct, encouraging, a little informal. Use plain language a normal person uses at the gym. NEVER say you're an AI, never give disclaimers, never use bullet points or headers in chat — just talk. Keep it to 2-4 sentences unless they ask for detail. You know your stuff (progressive overload, recovery, rep ranges, form) but you explain it simply. You're honest: if they should drop a weight, deload, rest, or fix form, you tell them straight — kindly. Give concrete, doable advice like "drop to a weight where the last two reps are hard but clean, then build back up." Never invent numbers — work from what they tell you.`;
-async function geminiCall(prompt, imageB64){
+async function geminiCall(prompt, media){
   if(!S.settings.geminiKey) throw new Error('no key');
   const parts=[{text:prompt}];
-  if(imageB64)parts.push({inline_data:{mime_type:'image/jpeg',data:imageB64}});
+  if(media){
+    // accept either a {b64, mime} object (photo or video) or a bare base64 string
+    let b64, mime;
+    if(typeof media==='string'){ b64=media; mime='image/jpeg'; }
+    else { b64=media.b64; mime=media.mime||'image/jpeg'; }
+    const clean=String(b64).replace(/^data:[^,]+,/,''); // strip any data-URL prefix
+    parts.push({inline_data:{mime_type:mime,data:clean}});
+  }
   let r;
   try{
     r=await fetch(GEMINI_URL+S.settings.geminiKey,{method:'POST',headers:{'Content-Type':'application/json'},
@@ -1110,6 +1288,52 @@ function streak(){
   }
   return s;
 }
+/* ============================================================
+   SKIP DETECTION
+   A scheduled training day in the PAST with no logged workout
+   and no override = a skip. We scan the last ~21 days, record
+   skips, and surface them to the home screen + the coach.
+   ============================================================ */
+function detectSkips(){
+  if(!S.program||!S.program.startDate)return [];
+  const logged=new Set(S.logs.map(l=>l.date));
+  const start=new Date(S.program.startDate);
+  const skips=[];
+  const today=new Date(); today.setHours(0,0,0,0);
+  for(let i=1;i<=21;i++){
+    const d=new Date(); d.setDate(d.getDate()-i); d.setHours(0,0,0,0);
+    if(d<start)break;
+    const ds=d.toISOString().slice(0,10);
+    const dow=(d.getDay()+6)%7;
+    const ov=(S.program.overrides||{})[ds];
+    if(ov==='trained'||ov==='recovery')continue;       // counted / intentional
+    if(logged.has(ds))continue;                          // they trained
+    const slot=S.program.schedule[dow];
+    if(slot && slot.type==='train'){
+      skips.push({date:ds, day:S.program.split[slot.idx]?.name||'workout',
+        dow:['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][dow]});
+    }
+  }
+  return skips; // most-recent first
+}
+// when a workout is logged (or user marks intentional), clear that date from skips
+function clearSkipFor(dateStr){
+  S.skipReasons=S.skipReasons||{};
+  // nothing else needed: detectSkips reads logs live; just drop any stored reason
+  if(S.skipReasons[dateStr])delete S.skipReasons[dateStr];
+}
+// user (or coach) can record WHY a day was skipped
+function recordSkipReason(dateStr,reason){
+  S.skipReasons=S.skipReasons||{};
+  S.skipReasons[dateStr]=reason;
+  // mark as acknowledged so it stops nagging on the home screen
+  S.skipAck=S.skipAck||{};S.skipAck[dateStr]=true;
+  save();
+}
+function unackedSkips(){
+  const ack=S.skipAck||{};
+  return detectSkips().filter(s=>!ack[s.date]);
+}
 function renderHome(){
   if(!S.program){go('workout');return;}
   const p=S.profile,r=overallRank(),tw=todaysWorkout();
@@ -1158,6 +1382,33 @@ function renderHome(){
       <div class="disp" style="font-size:22px;margin-top:6px">Rest Day</div>
       <p class="small" style="margin-top:4px">Recovery is where you grow. Eat, sleep, walk.</p>
       <button class="btn ghost sm" style="width:100%;margin-top:14px" onclick="go('workout')">Train anyway</button>
+    </div>`;
+  }
+
+  // missed-workout nudge (skip detection)
+  const skips=unackedSkips();
+  if(skips.length){
+    const s=skips[0];
+    h+=`<div class="card" style="border-color:var(--amber)">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+        <span style="font-size:22px">⏳</span>
+        <div class="disp" style="font-size:18px">Missed ${skips.length>1?`${skips.length} workouts`:`${s.dow}'s ${s.day}`}</div></div>
+      <p class="small" style="margin-bottom:12px">Life happens. Tell the coach what got in the way so it can adjust — or just pick back up today.</p>
+      <button class="btn sm" style="width:100%;background:var(--amber);color:#241a02" onclick="logSkipReason('${s.date}')">Why I missed it</button>
+      <button class="btn ghost sm" style="width:100%;margin-top:8px" onclick="dismissSkip('${s.date}')">Dismiss</button>
+    </div>`;
+  }
+
+  // plateau alert — a lift has stalled
+  const stalls=detectStalls();
+  if(stalls.length){
+    const s=stalls[0];
+    h+=`<div class="card" style="border-color:var(--amber)">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+        <span style="font-size:22px">🧱</span>
+        <div class="disp" style="font-size:18px">${s.name} has stalled</div></div>
+      <p class="small" style="margin-bottom:12px">Stuck at ${s.weight}lb for ${s.sessions} sessions. Back off to ~${s.deloadW}lb, nail your reps, then build back — that's how you break through.</p>
+      ${S.settings.progressiveOverload?`<button class="btn sm" style="width:100%" onclick="applyDeload('${s.name.replace(/'/g,"")}',${s.deloadW});renderHome()">Deload to ${s.deloadW}lb</button>`:`<p class="small" style="color:var(--amber)">Turn on Progressive Overload in Settings to auto-deload.</p>`}
     </div>`;
   }
 
@@ -1231,11 +1482,77 @@ function explainCalories(){
     </div>
     <button class="btn ghost" style="margin-top:16px" onclick="closeModal()">Got it</button>`);
 }
+// ---- skip handling ----
+function logSkipReason(date){
+  const skips=detectSkips();
+  const s=skips.find(x=>x.date===date)||skips[0];
+  const label=s?`${s.dow}'s ${s.day}`:'that workout';
+  modal(`<h3>What got in the way?</h3>
+    <p class="small" style="margin-bottom:12px">No judgment — this just helps the coach adjust your plan. (${label})</p>
+    <div class="chips" style="flex-direction:column;gap:8px">
+      ${['Too busy / no time','Too tired / sore','Felt sick','Lost motivation','Travelling / away','Just didn\'t feel like it'].map(r=>
+        `<button class="chip" style="width:100%;text-align:left" onclick="saveSkipReason('${date}','${r.replace(/'/g,"")}')">${r}</button>`).join('')}
+    </div>
+    <div class="field" style="margin-top:14px"><label>Or write your own</label>
+      <input class="inp" id="skipCustom" placeholder="e.g. work ran late all week"></div>
+    <button class="btn" onclick="saveSkipReason('${date}', ($('#skipCustom').value||'').trim()||'Skipped')">Save</button>`);
+}
+function saveSkipReason(date,reason){
+  recordSkipReason(date,reason);
+  closeModal();
+  // acknowledge ALL current skips so the card clears, but keep individual reasons
+  detectSkips().forEach(s=>{S.skipAck=S.skipAck||{};S.skipAck[s.date]=S.skipAck[s.date]||(s.date===date);});
+  save();
+  if(S.settings.geminiKey){
+    toast('Got it — opening your coach');
+    setTimeout(()=>{openCoachChat();
+      // pre-seed a coach turn acknowledging the skip
+      setTimeout(()=>coachOpener(true),300);
+    },400);
+  } else {
+    toast('Logged. Pick back up whenever you\'re ready','good');
+    renderHome();
+  }
+}
+function dismissSkip(date){
+  S.skipAck=S.skipAck||{};
+  detectSkips().forEach(s=>S.skipAck[s.date]=true);
+  save();renderHome();
+}
 // ---- AI coach chat (text + optional photo) ----
 let coachChatLog=[];
+// Proactive opener: when the chat opens, the coach speaks first — reacting to
+// skipped days, how recent sessions felt, or weak muscles, without being asked.
+async function coachOpener(force){
+  if(!S.settings.geminiKey)return;
+  // only auto-open once per day unless forced (e.g. user just logged a skip reason)
+  if(!force && !canAutoAI('opener'))return;
+  if(!force) markAutoAI('opener');
+  if(coachChatLog.length && !force)return; // already chatting
+  coachChatLog.push({role:'coach',text:'…'});renderCoachChat();
+  const skips=detectSkips();
+  const focus = skips.length
+    ? `They've skipped ${skips.length} scheduled day(s) recently. Ask — warmly, no guilt — what got in the way and adjust if needed.`
+    : (S.logs.length
+        ? `React to how their last session(s) felt and nudge them on the next step.`
+        : `They haven't logged a workout yet. Encourage them to start their first one.`);
+  const ctx=`${coachContext()}
+
+You are opening the conversation FIRST (the client hasn't said anything yet). ${focus} Keep it to 1-3 sentences, warm and human, like texting a client you actually coach. End with a question so they reply. No directives, no lists.`;
+  try{
+    const raw=await geminiCall(ctx);
+    coachChatLog[coachChatLog.length-1]={role:'coach',text:(raw||'Hey — how are the workouts feeling lately?').trim()};
+  }catch(e){
+    coachChatLog[coachChatLog.length-1]={role:'coach',
+      text: skips.length?`Hey, noticed you missed a couple sessions — all good, life happens. What got in the way?`:`Hey! How have the workouts been feeling?`};
+  }
+  renderCoachChat();
+}
 function openCoachChat(){
   if(!S.settings.geminiKey){modal(`<h3>💬 Coach Chat</h3><p style="color:var(--txt2);line-height:1.5">Add your free Gemini key in Settings → AI to chat with your coach. Then you can ask things like "this exercise left me out of breath" or "how do I lose face fat" and attach a photo.</p><button class="btn" style="margin-top:16px" onclick="closeModal();openSettings()">Open Settings</button>`);return;}
   renderCoachChat();
+  // coach speaks first if this is a fresh conversation
+  if(!coachChatLog.length)coachOpener(false);
 }
 // renders the apply button for a coach action (change/swap/add/remove)
 function actionButton(a,mi,ai){
@@ -1261,47 +1578,89 @@ function runCoachAction(mi,ai){
 }
 function renderCoachChat(){
   const msgs=coachChatLog.map((m,mi)=>m.role==='user'
-    ?`<div style="text-align:right;margin:8px 0"><span style="display:inline-block;background:var(--acc);color:#0a0a0b;padding:9px 13px;border-radius:14px 14px 4px 14px;font-weight:600;max-width:85%;text-align:left">${m.text}${m.img?' 📷':''}</span></div>`
+    ?`<div style="text-align:right;margin:8px 0"><span style="display:inline-block;background:var(--acc);color:#0a0a0b;padding:9px 13px;border-radius:14px 14px 4px 14px;font-weight:600;max-width:85%;text-align:left">${m.text}${m.img?' 📷':''}${m.vid?' 🎥':''}</span></div>`
     :`<div style="margin:8px 0"><span style="display:inline-block;background:var(--card2);padding:9px 13px;border-radius:14px 14px 14px 4px;max-width:85%">${m.text.replace(/\n/g,'<br>')}</span>${m.actions?m.actions.map((a,ai)=>actionButton(a,mi,ai)).join(''):''}</div>`
-  ).join('')||'<p class="small" style="text-align:center;padding:20px">Talk to your coach like a real person — "this left me out of breath", "I don\'t have a bench", "my shoulder feels off", "give me an extra ab move". Attach a photo for form or physique feedback. When the advice means changing your plan, you\'ll get a button to apply it.</p>';
+  ).join('')||'<p class="small" style="text-align:center;padding:20px">Talk to your coach like a real person — "this left me out of breath", "I don\'t have a bench", "my shoulder feels off", "give me an extra ab move". Attach a 📷 photo for physique/form feedback or a 🎥 short video for a form check. When the advice means changing your plan, you\'ll get a button to apply it.</p>';
   modal(`<h3>💬 Coach Chat</h3>
-    <div id="chatScroll" style="max-height:46vh;overflow-y:auto;margin-bottom:12px">${msgs}</div>
+    <div id="chatScroll" style="max-height:44vh;overflow-y:auto;margin-bottom:12px">${msgs}</div>
     <div id="chatImgPreview"></div>
     <div class="addw">
       <input class="inp" id="chatInput" placeholder="Message your coach…" style="flex:1" onkeydown="if(event.key==='Enter')sendCoachChat()">
-      <button class="btn ghost sm" style="flex:0 0 auto" onclick="$('#chatImgInput').click()">📷</button>
+      <button class="btn ghost sm" style="flex:0 0 auto" onclick="$('#chatImgInput').click()" title="Photo">📷</button>
+      <button class="btn ghost sm" style="flex:0 0 auto" onclick="$('#chatVidInput').click()" title="Video form check (10s max)">🎥</button>
       <button class="btn sm" style="flex:0 0 auto" onclick="sendCoachChat()">Send</button>
     </div>
-    <input type="file" id="chatImgInput" accept="image/*" style="display:none" onchange="stageChatImg(this)">`);
+    <input type="file" id="chatImgInput" accept="image/*" style="display:none" onchange="stageChatImg(this)">
+    <input type="file" id="chatVidInput" accept="video/*" capture="environment" style="display:none" onchange="stageChatVid(this)">`);
   const sc=$('#chatScroll');if(sc)sc.scrollTop=sc.scrollHeight;
 }
-let stagedChatImg=null;
+let stagedChatImg=null, stagedChatVid=null, stagedVidMime=null;
+// Downscale a photo before sending — full-size phone photos are several MB and
+// the inline request to Gemini fails (which made the coach say it sees no photo).
 function stageChatImg(input){
   const f=input.files[0];if(!f)return;
-  const rd=new FileReader();rd.onload=()=>{stagedChatImg=rd.result.split(',')[1];
-    $('#chatImgPreview').innerHTML=`<div class="small" style="margin-bottom:8px;color:var(--acc)">📷 Photo attached — add a question and send</div>`;};
+  stagedChatVid=null;
+  const rd=new FileReader();
+  rd.onload=()=>{
+    const img=new Image();
+    img.onload=()=>{
+      const max=1024; let {width:w,height:h}=img;
+      if(w>max||h>max){const r=Math.min(max/w,max/h);w=Math.round(w*r);h=Math.round(h*r);}
+      const c=document.createElement('canvas');c.width=w;c.height=h;
+      c.getContext('2d').drawImage(img,0,0,w,h);
+      stagedChatImg=c.toDataURL('image/jpeg',0.8).split(',')[1]; // compressed base64
+      $('#chatImgPreview').innerHTML=`<div class="small" style="margin-bottom:8px;color:var(--acc)">📷 Photo ready — add a question and send</div>`;
+    };
+    img.onerror=()=>{stagedChatImg=rd.result.split(',')[1];$('#chatImgPreview').innerHTML=`<div class="small" style="margin-bottom:8px;color:var(--acc)">📷 Photo attached</div>`;};
+    img.src=rd.result;
+  };
   rd.readAsDataURL(f);
+}
+// Video form-check: max 10s, 1 per hour, sent compressed (Gemini reads short clips).
+function stageChatVid(input){
+  const f=input.files[0];if(!f)return;
+  // rate limit: one video per hour
+  const last=S.settings.lastVideoTs||0;
+  const mins=(Date.now()-last)/60000;
+  if(mins<60){toast(`Video form-check is 1 per hour — try again in ${Math.ceil(60-mins)} min`,'bad');input.value='';return;}
+  // size guard (~20MB inline ceiling)
+  if(f.size>20*1024*1024){toast('That clip is too big — keep it under ~10 seconds','bad');input.value='';return;}
+  // duration guard
+  const url=URL.createObjectURL(f);
+  const v=document.createElement('video');v.preload='metadata';
+  v.onloadedmetadata=()=>{
+    URL.revokeObjectURL(url);
+    if(v.duration>11){toast('Keep the clip to 10 seconds or less','bad');input.value='';return;}
+    const rd=new FileReader();
+    rd.onload=()=>{stagedChatVid=rd.result.split(',')[1];stagedVidMime=f.type||'video/mp4';stagedChatImg=null;
+      $('#chatImgPreview').innerHTML=`<div class="small" style="margin-bottom:8px;color:var(--acc)">🎥 Video ready (${v.duration.toFixed(1)}s) — ask your form question and send</div>`;};
+    rd.readAsDataURL(f);
+  };
+  v.onerror=()=>{URL.revokeObjectURL(url);toast('Couldn\'t read that video','bad');};
+  v.src=url;
 }
 async function sendCoachChat(){
   const inp=$('#chatInput');const text=inp.value.trim();
-  if(!text&&!stagedChatImg)return;
-  coachChatLog.push({role:'user',text:text||'(photo)',img:!!stagedChatImg});
-  const img=stagedChatImg;stagedChatImg=null;
+  if(!text&&!stagedChatImg&&!stagedChatVid)return;
+  const hasVid=!!stagedChatVid, hasImg=!!stagedChatImg;
+  coachChatLog.push({role:'user',text:text||(hasVid?'(video form check)':'(photo)'),img:hasImg,vid:hasVid});
+  const media = hasVid ? {b64:stagedChatVid, mime:stagedVidMime||'video/mp4'} : (hasImg ? {b64:stagedChatImg, mime:'image/jpeg'} : null);
+  if(hasVid)S.settings.lastVideoTs=Date.now(); // start the 1/hour clock
+  stagedChatImg=null;stagedChatVid=null;
   renderCoachChat();
   coachChatLog.push({role:'coach',text:'…thinking'});renderCoachChat();
-  // give the coach the current program so its advice is specific to their lifts
-  const prog=S.program?S.program.split.map(d=>d.name+': '+d.exercises.filter(e=>!e.warmup&&!e.cardio).map(e=>`${e.name} ${e.weight!=null?e.weight+'lb':'bodyweight'}×${e.reps}`).join(', ')).join(' | '):'no program yet';
-  // exercises they can actually do with their gear (so swaps/adds are realistic)
   const canDo=availableExerciseNames();
   const history=coachChatLog.slice(-7,-1).map(m=>`${m.role==='user'?'Client':'You'}: ${m.text}`).join('\n');
-  const ctx=`${history?history+'\n':''}Client just said: "${text}".
+  const mediaNote = hasVid
+    ? '\n\nThe client attached a SHORT VIDEO of themselves doing an exercise. Watch the movement and give specific form feedback — what looks good, the single most important thing to fix, and one cue to fix it. Be encouraging and concrete.'
+    : (hasImg ? '\n\nThe client attached a photo. Use it to inform your reply (form or physique). Be constructive and specific.' : '');
+  const ctx=`${coachContext()}
 
-Their profile: ${S.profile.age}yo ${S.profile.sex}, ${S.profile.weight}lb, goal=${S.profile.goal}, experience=${S.profile.experience}.
-Their gym: ${(S.profile.equipment||[]).join(', ')||'bodyweight only'}${S.profile.barbellMax?` (barbell loads up to ${S.profile.barbellMax}lb)`:''}.
-Their current program: ${prog}.
 Exercises they CAN do with their equipment: ${canDo.join(', ')}.
 
-Reply as their coach (human, conversational, 2-4 sentences). React like a real coach to how things felt or what they're missing, and tell them what to do.
+${history?'RECENT CHAT:\n'+history+'\n\n':''}Client just said: "${text}".${mediaNote}
+
+Reply as their coach (human, conversational, 2-4 sentences). Use everything you know about them — react to how recent sessions felt, call out skipped days or weak muscles when relevant, and tell them what to do. Don't list data back at them; just talk like a coach who's been paying attention.
 
 IMPORTANT — when your advice means actually editing their program, append the matching directive(s) on their OWN new line at the very end. Only use exercise names from the "CAN do" list for new exercises. Use the exact current name from their program for the old/removed one. Omit all directives if none apply.
 - Change a weight: [[CHANGE:exercise name|newWeightLb]]
@@ -1310,7 +1669,7 @@ IMPORTANT — when your advice means actually editing their program, append the 
 - Remove an exercise: [[REMOVE:exercise name]]
 Examples: [[SWAP:Barbell Bench Press|Push-up]]   [[ADD:abs|Plank]]   [[REMOVE:Standing Calf Raise]]`;
   try{
-    const raw=await geminiCall(ctx,img);
+    const raw=await geminiCall(ctx,media);
     // pull out any directives
     const actions=[];
     let clean=(raw||'')
@@ -1322,6 +1681,38 @@ Examples: [[SWAP:Barbell Bench Press|Push-up]]   [[ADD:abs|Plank]]   [[REMOVE:St
     coachChatLog[coachChatLog.length-1]={role:'coach',text:clean||'Got it.',actions:actions.length?actions:null};
   }catch(e){coachChatLog[coachChatLog.length-1]={role:'coach',text:aiErrorMsg(e)};}
   renderCoachChat();
+}
+// Everything the coach should know about the client — history, ratings,
+// skipped days, and current muscle rankings. So it can react without being asked.
+function coachContext(){
+  const p=S.profile;
+  const prog=S.program?S.program.split.map(d=>d.name+': '+d.exercises.filter(e=>!e.warmup&&!e.cardio).map(e=>`${e.name} ${e.weight!=null?e.weight+'lb':'bodyweight'}×${repLabel(e)}`).join(', ')).join(' | '):'no program yet';
+  // last 5 sessions with how they were rated + a sample of loads
+  const recent=S.logs.slice(-5).map(l=>{
+    const d=l.difficulty||{};
+    const rated=[d.start,d.mid,d.end].filter(Boolean).join('/')||'unrated';
+    const top=(l.exercises||[]).filter(e=>!e.warmup&&e.sets).slice(0,3)
+      .map(e=>`${e.name} ${e.sets.filter(s=>s.done).map(s=>s.weight+'×'+s.reps).join(',')}`).join('; ');
+    return `${l.date} ${l.name} (felt ${rated})${top?': '+top:''}`;
+  }).join('\n')||'no workouts logged yet';
+  // skipped scheduled days (with reason if known)
+  const skips=detectSkips().slice(0,6).map(s=>{
+    const why=(S.skipReasons||{})[s.date];
+    return `${s.dow} ${s.date} ${s.day}${why?` (they said: ${why})`:' (no reason given)'}`;
+  }).join('\n')||'none — good adherence';
+  // muscle rankings
+  const ms=muscleStrength();
+  const ranks=Object.keys(ms).map(m=>`${MUSCLE_LABELS[m]||m}: ${TIERS[Math.min(5,Math.round(ms[m]))]}`).join(', ')||'not assessed yet';
+  const lifts=Object.entries(S.lifts).map(([k,v])=>v.unknown?`${k}: never done`:`${k}: ${v.weight}×${v.reps}`).join(', ')||'none';
+  return `CLIENT PROFILE: ${p.age}yo ${p.sex}, ${p.weight}lb, goal=${p.goal}, experience=${p.experience}, trains ${p.days}d/wk ~${p.workoutMin}min. Progressive overload is ${S.settings.progressiveOverload?'ON':'OFF'}.
+GYM: ${(p.equipment||[]).join(', ')||'bodyweight only'}${p.barbellMax?` (barbell to ${p.barbellMax}lb)`:''}.
+ASSESSED LIFTS: ${lifts}.
+MUSCLE RANKINGS: ${ranks}.
+CURRENT PROGRAM: ${prog}.
+RECENT SESSIONS (most recent last):
+${recent}
+SKIPPED SCHEDULED DAYS:
+${skips}`;
 }
 // every exercise name the user can actually perform with their current equipment
 function availableExerciseNames(){
@@ -1429,43 +1820,61 @@ function muscleMapSVG(){
   const ms=muscleStrength();
   const c=m=>muscColor(ms[m]||0);
   const tap=m=>`onclick="muscleInfo('${m}')" style="cursor:pointer"`;
-  const base='#26262c';
-  return `<div class="mmap"><svg viewBox="0 0 140 280" xmlns="http://www.w3.org/2000/svg">
-    <!-- head + neck -->
-    <ellipse cx="70" cy="22" rx="13" ry="15" fill="${base}"/>
-    <path d="M63 35 h14 v8 h-14 Z" fill="${base}"/>
+  const body='#20242b';      // body silhouette fill
+  const edge='#2c323b';      // silhouette outline
+  // Anatomically-proportioned front view. Head ≈ 1/7.5 of height (realistic),
+  // shoulders ~2x head-width, V-taper to waist, then legs ~half the height.
+  return `<div class="mmap"><svg viewBox="0 0 200 380" xmlns="http://www.w3.org/2000/svg">
+    <!-- ===== body silhouette (single connected outline) ===== -->
+    <g fill="${body}" stroke="${edge}" stroke-width="1.5">
+      <!-- head -->
+      <ellipse cx="100" cy="30" rx="17" ry="20"/>
+      <!-- neck -->
+      <path d="M91 47 h18 v11 h-18 Z"/>
+      <!-- torso + arms + legs as one mass -->
+      <path d="M70 60
+        Q100 52 130 60
+        L150 72 Q160 80 162 96 L156 150 Q152 156 148 150 L142 100
+        L138 92 L138 150
+        Q140 200 134 215 L120 215 Q116 180 116 150
+        L116 150 Q116 215 112 250 L112 320 Q112 350 108 372 L94 372
+        Q92 340 92 320 L92 250 Q88 215 88 150
+        L88 150 Q84 180 80 215 L66 215 Q60 200 62 150
+        L62 92 L58 100 L44 150 Q40 156 38 150 L44 96 Q46 80 50 72 Z"/>
+    </g>
+    <!-- ===== muscle groups (positioned on the silhouette) ===== -->
     <!-- traps -->
-    <path d="M48 44 Q70 36 92 44 Q86 52 70 50 Q54 52 48 44 Z" fill="${c('traps')}" ${tap('traps')}/>
-    <!-- delts (rounded caps) -->
-    <ellipse cx="42" cy="58" rx="13" ry="12" fill="${c('frontDelt')}" ${tap('frontDelt')}/>
-    <ellipse cx="98" cy="58" rx="13" ry="12" fill="${c('frontDelt')}" ${tap('frontDelt')}/>
+    <path d="M78 60 Q100 54 122 60 Q114 70 100 68 Q86 70 78 60 Z" fill="${c('traps')}" ${tap('traps')}/>
+    <!-- delts -->
+    <ellipse cx="62" cy="80" rx="16" ry="15" fill="${c('frontDelt')}" ${tap('frontDelt')}/>
+    <ellipse cx="138" cy="80" rx="16" ry="15" fill="${c('frontDelt')}" ${tap('frontDelt')}/>
     <!-- chest (two pecs) -->
-    <path d="M55 50 Q70 47 70 49 L70 78 Q60 84 50 76 Q48 60 55 50 Z" fill="${c('chest')}" ${tap('chest')}/>
-    <path d="M85 50 Q70 47 70 49 L70 78 Q80 84 90 76 Q92 60 85 50 Z" fill="${c('chest')}" ${tap('chest')}/>
+    <path d="M82 70 Q100 66 100 69 L100 104 Q86 110 74 100 Q72 82 82 70 Z" fill="${c('chest')}" ${tap('chest')}/>
+    <path d="M118 70 Q100 66 100 69 L100 104 Q114 110 126 100 Q128 82 118 70 Z" fill="${c('chest')}" ${tap('chest')}/>
     <!-- biceps -->
-    <path d="M30 62 Q26 76 30 92 L40 90 Q42 74 40 64 Q35 60 30 62 Z" fill="${c('biceps')}" ${tap('biceps')}/>
-    <path d="M110 62 Q114 76 110 92 L100 90 Q98 74 100 64 Q105 60 110 62 Z" fill="${c('biceps')}" ${tap('biceps')}/>
+    <path d="M48 96 Q42 116 47 138 L60 135 Q62 112 59 98 Q53 93 48 96 Z" fill="${c('biceps')}" ${tap('biceps')}/>
+    <path d="M152 96 Q158 116 153 138 L140 135 Q138 112 141 98 Q147 93 152 96 Z" fill="${c('biceps')}" ${tap('biceps')}/>
     <!-- forearms -->
-    <path d="M28 94 Q26 108 30 124 L38 122 Q40 106 38 94 Z" fill="${c('forearms')}" ${tap('forearms')}/>
-    <path d="M112 94 Q114 108 110 124 L102 122 Q100 106 102 94 Z" fill="${c('forearms')}" ${tap('forearms')}/>
-    <!-- abs (6-pack grid) -->
+    <path d="M47 142 Q43 162 48 186 L57 184 Q60 160 57 142 Z" fill="${c('forearms')}" ${tap('forearms')}/>
+    <path d="M153 142 Q157 162 152 186 L143 184 Q140 160 143 142 Z" fill="${c('forearms')}" ${tap('forearms')}/>
+    <!-- abs (6-pack) -->
     <g ${tap('abs')}>
-      <rect x="58" y="82" width="11" height="11" rx="2" fill="${c('abs')}"/>
-      <rect x="71" y="82" width="11" height="11" rx="2" fill="${c('abs')}"/>
-      <rect x="58" y="95" width="11" height="11" rx="2" fill="${c('abs')}"/>
-      <rect x="71" y="95" width="11" height="11" rx="2" fill="${c('abs')}"/>
-      <rect x="58" y="108" width="11" height="12" rx="2" fill="${c('abs')}"/>
-      <rect x="71" y="108" width="11" height="12" rx="2" fill="${c('abs')}"/>
+      <rect x="86" y="110" width="13" height="12" rx="2.5" fill="${c('abs')}"/>
+      <rect x="101" y="110" width="13" height="12" rx="2.5" fill="${c('abs')}"/>
+      <rect x="86" y="124" width="13" height="12" rx="2.5" fill="${c('abs')}"/>
+      <rect x="101" y="124" width="13" height="12" rx="2.5" fill="${c('abs')}"/>
+      <rect x="86" y="138" width="13" height="13" rx="2.5" fill="${c('abs')}"/>
+      <rect x="101" y="138" width="13" height="13" rx="2.5" fill="${c('abs')}"/>
     </g>
     <!-- obliques -->
-    <path d="M52 84 Q50 104 56 122 L58 120 Q56 100 57 84 Z" fill="${c('abs')}" opacity="0.6" ${tap('abs')}/>
-    <path d="M88 84 Q90 104 84 122 L82 120 Q84 100 83 84 Z" fill="${c('abs')}" opacity="0.6" ${tap('abs')}/>
+    <path d="M80 112 Q76 136 82 154 L85 152 Q81 130 83 112 Z" fill="${c('abs')}" opacity="0.55" ${tap('abs')}/>
+    <path d="M120 112 Q124 136 118 154 L115 152 Q119 130 117 112 Z" fill="${c('abs')}" opacity="0.55" ${tap('abs')}/>
     <!-- quads -->
-    <path d="M52 126 Q50 160 56 192 L66 190 Q68 154 66 126 Q59 122 52 126 Z" fill="${c('quads')}" ${tap('quads')}/>
-    <path d="M88 126 Q90 160 84 192 L74 190 Q72 154 74 126 Q81 122 88 126 Z" fill="${c('quads')}" ${tap('quads')}/>
+    <path d="M80 170 Q74 215 82 262 L96 258 Q98 210 96 170 Q88 165 80 170 Z" fill="${c('quads')}" ${tap('quads')}/>
+    <path d="M120 170 Q126 215 118 262 L104 258 Q102 210 104 170 Q112 165 120 170 Z" fill="${c('quads')}" ${tap('quads')}/>
     <!-- calves -->
-    <path d="M55 196 Q52 222 58 246 L66 244 Q67 220 65 196 Z" fill="${c('calves')}" ${tap('calves')}/>
-    <path d="M85 196 Q88 222 82 246 L74 244 Q73 220 75 196 Z" fill="${c('calves')}" ${tap('calves')}/>
+    <path d="M84 266 Q79 304 86 342 L97 339 Q98 302 95 266 Z" fill="${c('calves')}" ${tap('calves')}/>
+    <path d="M116 266 Q121 304 114 342 L103 339 Q102 302 105 266 Z" fill="${c('calves')}" ${tap('calves')}/>
   </svg></div>`;
 }
 
@@ -1527,7 +1936,7 @@ function previewDay(idx){
     const loadStr=e.weight!=null?`start ${e.weight}lb`:'bodyweight / your load';
     h+=`<div class="ex-card"><div class="ex-head">
       <div><div class="nm">${e.name}${e.priority?' <span style="color:var(--acc);font-size:12px">★ priority</span>':''}</div>
-        <div class="meta">${e.sets} × ${e.reps} reps · <button onclick="pickWeight('${d.name.replace(/'/g,"")}','${e.name.replace(/'/g,"")}')" style="color:var(--acc);font-weight:700;text-decoration:underline">${loadStr}</button></div></div>
+        <div class="meta">${e.sets} × ${repLabel(e)} reps · <button onclick="pickWeight('${d.name.replace(/'/g,"")}','${e.name.replace(/'/g,"")}')" style="color:var(--acc);font-weight:700;text-decoration:underline">${loadStr}</button></div></div>
       <button class="ex-musc" onclick="showForm('${e.name.replace(/'/g,"")}','${e.muscle}')">${MUSCLE_LABELS[e.muscle]}</button>
     </div></div>`;
   });
@@ -1559,9 +1968,56 @@ function setExWeight(dayName,exName,w){
 }
 function toggleFav(name){const i=S.favorites.indexOf(name);if(i>=0)S.favorites.splice(i,1);else S.favorites.push(name);save();previewDay(S.program.split.findIndex(d=>d.name===name));toast(i>=0?'Removed favorite':'Added to favorites ★');}
 
+// A personal, specific explanation of why THIS exercise matters for THIS user —
+// built from their weight, the lift they've logged, their rank, the next-rank
+// target, and their stated goal. Not a generic blurb; uses their real numbers.
+function whyExercise(name,muscle){
+  const p=S.profile;
+  const label=MUSCLE_LABELS[muscle]||muscle;
+  const goal=p.goal;
+  const priority=(p.priority||[]).includes(muscle);
+  // find the program slot for current load + rep range
+  let slot=null;
+  if(S.program)S.program.split.forEach(d=>d.exercises.forEach(e=>{if(e.name===name)slot=e;}));
+  // find an assessed/derived rank for this muscle
+  const ms=muscleStrength();
+  const lvl=ms[muscle];
+  const tier=lvl!=null?TIERS[Math.min(5,Math.round(lvl))]:null;
+  // driving lift for a next-rank target
+  const drivingLift=Object.keys(LIFT_MUSCLES).find(L=>LIFT_MUSCLES[L].includes(muscle)&&S.lifts[L]&&S.lifts[L].weight);
+  let lines=[];
+  // 1) what it trains + whether it's a priority for them
+  if(priority) lines.push(`This is one of your <b>priority muscles</b> — you told me you want your ${label.toLowerCase()} to grow, so I gave it extra volume in your plan.`);
+  else lines.push(`Works your <b>${label.toLowerCase()}</b>${/arm|bicep|tricep/.test(label.toLowerCase())?' — exactly what you want bigger':''}.`);
+  // 2) their current load + rep target on it
+  if(slot){
+    const reps=repLabel(slot);
+    if(slot.weight!=null) lines.push(`Your plan starts you at <b>${slot.weight}lb × ${reps}</b>. At ${p.weight}lb bodyweight, that's calibrated to where you actually are — not a random number.`);
+    else lines.push(`You're doing this at bodyweight for <b>${reps}</b> reps — no equipment needed, scales with you.`);
+  }
+  // 3) rank + concrete next step
+  if(tier && drivingLift){
+    const r=rankLift(drivingLift,epley1RM(+S.lifts[drivingLift].weight,+S.lifts[drivingLift].reps));
+    if(r&&r.nextW){
+      const workW=Math.round(r.nextW/(1+10/30)/5)*5;
+      lines.push(`Your ${label.toLowerCase()} ranks <b>${tier}</b> right now. Work up to about <b>${workW}lb × 10</b> on your ${drivingLift.toLowerCase()} and you hit <b>${r.nextTier}</b>.`);
+    } else if(r){ lines.push(`Your ${label.toLowerCase()} ranks <b>${tier}</b> — strong for your bodyweight.`); }
+  }
+  // 4) tie to their actual goal
+  if(/arm|bicep|tricep/.test((label+name).toLowerCase()) && /bigger|arm/.test('arms')){
+    if(/tricep/.test((label+name).toLowerCase())) lines.push(`Triceps are about two-thirds of your arm size, so this does more for arm size than curls alone.`);
+    else lines.push(`Progressive overload here — adding weight or reps over time — is what actually grows the muscle. Same weight forever = same size.`);
+  }
+  if(muscle==='chest') lines.push(`Building your chest also improves how the area looks as you lean out — muscle underneath gives it shape.`);
+  if(S.settings.progressiveOverload && slot && slot.weight!=null){
+    lines.push(`Because progressive overload is on, once you hit the top of your rep range on every set, I'll bump this up automatically next time.`);
+  }
+  return lines.join(' ');
+}
 function showForm(name,muscle){
   const ex=Object.values(EXLIB).flat().find(x=>x.n===name);
   const yt='https://www.youtube.com/results?search_query='+encodeURIComponent(name+' proper form how to');
+  const why=whyExercise(name,muscle);
   modal(`<h3>${name}</h3>
     <div style="background:var(--bg3);border-radius:14px;padding:18px;text-align:center;margin-bottom:14px">
       ${formAnimation(name)}
@@ -1569,8 +2025,26 @@ function showForm(name,muscle){
     </div>
     <a href="${yt}" target="_blank" rel="noopener" class="btn ghost" style="display:block;text-align:center;margin-bottom:14px;text-decoration:none">▶ Watch real demos on YouTube</a>
     <div style="display:flex;gap:8px;margin-bottom:12px"><span class="ex-musc">${MUSCLE_LABELS[muscle]}</span></div>
+    <div style="background:var(--accdim);border:1px solid var(--acc2);border-radius:12px;padding:14px;margin-bottom:14px">
+      <div style="font-size:12px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--acc);margin-bottom:7px">Why this is in YOUR plan</div>
+      <p style="color:var(--txt);line-height:1.6;font-size:14px;margin:0">${why}</p>
+      <button class="btn ghost sm" id="whyAiBtn" style="margin-top:12px;width:100%" onclick="whyExerciseAI('${name.replace(/'/g,"")}','${muscle}')">💬 Ask coach for more detail</button>
+    </div>
+    <div style="font-size:12px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--txt2);margin-bottom:6px">How to do it</div>
     <p style="color:var(--txt);line-height:1.6">${ex?ex.c:'Controlled reps, full range of motion, brace your core.'}</p>
     <button class="btn ghost" style="margin-top:18px" onclick="closeModal()">Got it</button>`);
+}
+// optional: richer AI explanation using their full context
+async function whyExerciseAI(name,muscle){
+  if(!S.settings.geminiKey){toast('Add a Gemini key in Settings for AI detail','bad');return;}
+  const btn=$('#whyAiBtn');if(btn){btn.textContent='Coach is thinking…';btn.disabled=true;}
+  const ctx=`${coachContext()}\n\nThe client tapped "${name}" (trains ${MUSCLE_LABELS[muscle]||muscle}) and wants to know why it's in THEIR plan and how it helps THEM specifically. In 2-4 sentences, using their actual weight, lifts, rank and goal, explain the benefit and what to focus on. Talk like their coach, no lists.`;
+  try{
+    const txt=await geminiCall(ctx);
+    if(btn){const box=btn.parentElement;
+      const p=document.createElement('p');p.style.cssText='color:var(--txt);line-height:1.6;font-size:14px;margin:12px 0 0;border-top:1px solid var(--acc2);padding-top:12px';
+      p.innerHTML=txt.replace(/\n/g,'<br>');box.insertBefore(p,btn);btn.remove();}
+  }catch(e){if(btn){btn.textContent='Coach unavailable — try again';btn.disabled=false;}}
 }
 function movementPattern(name){
   const n=(name||'').toLowerCase();
@@ -1759,7 +2233,7 @@ function startSession(idx){
   S.active={name:d.name,idx,date:todayStr(),started:Date.now(),
     exercises:d.exercises.map(e=>(e.warmup||e.cardio)
       ? {name:e.name,muscle:e.muscle,cue:e.cue,warmup:e.warmup,cardio:e.cardio,items:e.items,done:false}
-      : {name:e.name,muscle:e.muscle,cue:e.cue,rest:e.rest,target:e.reps,
+      : {name:e.name,muscle:e.muscle,cue:e.cue,rest:e.rest,target:e.reps,repRange:e.repRange,reps:e.reps,
          sets:Array.from({length:e.sets},()=>({weight:e.weight,reps:'',type:'normal',done:false}))}),
     difficulty:{start:null,mid:null,end:null}};
   save();renderActiveSession();
@@ -1867,10 +2341,27 @@ async function finishSession(){
   reflowForOffSchedule(finishedLog.date);
   applyAdaptiveRest(finishedLog);
 
+  // PROGRESSIVE OVERLOAD: adjust next session's weights from what was actually lifted
+  const progChanges=applyProgressiveOverload(finishedLog);
+
+  // clear any "skipped" flag for today — they trained
+  clearSkipFor(finishedLog.date);
+
   S.active=null;save();
 
-  // celebrate PRs
-  if(newPRs.length)setTimeout(()=>toast('🏆 New PR: '+newPRs[0]+(newPRs.length>1?` +${newPRs.length-1} more`:''),'good'),400);
+  // celebrate PRs with a real moment
+  if(newPRs.length){
+    setTimeout(()=>{
+      const rows=newPRs.slice(0,5).map(n=>{const pr=S.prs[n];
+        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--line)">
+          <b>${n}</b><span style="color:var(--acc);font-weight:800;white-space:nowrap;margin-left:10px">${pr.weight}lb × ${pr.reps}</span></div>`;}).join('');
+      modal(`<div style="text-align:center;font-size:44px;margin-bottom:4px">🏆</div>
+        <h3 style="text-align:center">New Personal Record${newPRs.length>1?'s':''}!</h3>
+        <p class="small" style="text-align:center;margin-bottom:12px">You just lifted heavier than ever before. This is what progress looks like.</p>
+        ${rows}
+        <button class="btn" style="margin-top:16px" onclick="closeModal()">Let's go 💪</button>`);
+    },500);
+  }
 
   go('home');toast('Workout saved!','good');
 
@@ -1879,8 +2370,38 @@ async function finishSession(){
     setTimeout(()=>toast('Hard session logged — I set tomorrow as recovery 🛌','good'),1400);
   }
 
-  // AI feedback if online + key
-  if(S.settings.geminiKey&&navigator.onLine){
+  // show progressive-overload adjustments so the change is transparent
+  if(progChanges.length){
+    setTimeout(()=>{
+      const rows=progChanges.map(c=>{
+        const arrow=c.action==='up'?'▲':c.action==='down'?'▼':'■';
+        const col=c.action==='up'?'var(--good)':c.action==='down'?'var(--amber)':'var(--txt2)';
+        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--line)">
+          <div><div style="font-weight:700">${c.name}</div><div class="small">${c.note}</div></div>
+          <div style="color:${col};font-weight:800;white-space:nowrap;margin-left:10px">${c.from}→${c.to}<span style="font-size:11px"> lb ${arrow}</span></div></div>`;
+      }).join('');
+      modal(`<h3>📈 Progressive Overload</h3><p class="small" style="margin-bottom:8px">Next time, based on what you actually lifted:</p>${rows}
+        <button class="btn ghost" style="margin-top:16px" onclick="closeModal()">Got it</button>`);
+    },900);
+  }
+
+  // stall/deload alert — if a lift has plateaued, suggest backing off to break through
+  const stalls=detectStalls();
+  if(stalls.length){
+    setTimeout(()=>{
+      const rows=stalls.map(s=>`<div style="padding:10px 0;border-bottom:1px solid var(--line)">
+        <div style="font-weight:700">${s.name} <span class="tag" style="background:var(--amber);color:#2a1d05;font-size:10px;padding:2px 7px;border-radius:10px;margin-left:6px">STALLED</span></div>
+        <div class="small" style="margin-top:4px">${s.note}</div>
+        ${S.settings.progressiveOverload?`<button class="btn sm" style="margin-top:8px;font-size:12px;padding:7px 12px" onclick="applyDeload('${s.name.replace(/'/g,"")}',${s.deloadW});closeModal()">✓ Deload ${s.name} to ${s.deloadW}lb</button>`:''}
+      </div>`).join('');
+      modal(`<h3>🧱 Hit a wall?</h3><p class="small" style="margin-bottom:8px">A lift has stalled. The fix isn't pushing harder — it's backing off to build momentum:</p>${rows}
+        <button class="btn ghost" style="margin-top:16px" onclick="closeModal()">Got it</button>`);
+    },progChanges.length?1700:900);
+  }
+
+  // AUTO AI feedback — debounced to once per day (manual chat/breakdown still unlimited)
+  if(S.settings.geminiKey&&navigator.onLine&&canAutoAI()){
+    markAutoAI();
     toast('Coach is reviewing…');
     try{const fb=await geminiSessionFeedback(finishedLog);
       if(fb){finishedLog.coachFeedback=fb;save();
@@ -1888,6 +2409,9 @@ async function finishSession(){
     }catch(e){/* offline / no key — fine */}
   }
 }
+/* ---- Gemini auto-call debounce: at most one automatic call per slot per day ---- */
+function canAutoAI(slot){ slot=slot||'session'; S.aiCalls=S.aiCalls||{}; return S.aiCalls[slot]!==todayStr(); }
+function markAutoAI(slot){ slot=slot||'session'; S.aiCalls=S.aiCalls||{}; S.aiCalls[slot]=todayStr(); save(); }
 
 /* ============================================================
    PROGRESS / STATS
@@ -1915,15 +2439,55 @@ function renderProgTab(){
 function ranksView(){
   let h=`<div class="card"><div class="card-h"><div class="t">Muscle Map</div></div>${muscleMapSVG()}
     <div class="mlegend"><span><i style="background:#2a2a30"></i>Weak</span><span><i style="background:var(--blue)"></i>Developing</span><span><i style="background:var(--green)"></i>Strong</span><span><i style="background:var(--acc)"></i>Elite</span></div></div>`;
+
+  // ---- Per-muscle rankings: tier + exactly what to lift to rank up ----
+  h+=`<div class="card"><div class="card-h"><div class="t">Muscle Ranks</div><span class="small">tap a lift below for detail</span></div>`;
+  const ms=muscleStrength();
+  // map each muscle to the assessed lift that best represents it (for the next-rank target)
+  const repForTarget=10; // show the goal as a realistic working set
+  const order=['chest','back','lats','quads','hamstrings','glutes','frontDelt','sideDelt','rearDelt','biceps','triceps','forearms','abs','calves','traps'];
+  order.forEach(m=>{
+    const lvl=ms[m];
+    const label=MUSCLE_LABELS[m]||m;
+    if(lvl==null){
+      h+=`<div style="display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)">
+        <b style="font-size:14px">${label}</b><span class="small">no data — log a lift</span></div>`;
+      return;
+    }
+    const idx=Math.min(5,Math.round(lvl));
+    const tier=TIERS[idx];
+    // find the assessed lift that drives this muscle, to compute the next-rank load
+    const drivingLift=Object.keys(LIFT_MUSCLES).find(L=>LIFT_MUSCLES[L].includes(m) && S.lifts[L] && S.lifts[L].weight);
+    let goalStr='';
+    if(drivingLift && idx<5){
+      const r=rankLift(drivingLift, epley1RM(+S.lifts[drivingLift].weight,+S.lifts[drivingLift].reps));
+      if(r && r.nextW){
+        // convert the next-tier 1RM into a doable working set (≈ reps at that 1RM)
+        const workW=Math.round(r.nextW/(1+repForTarget/30)/5)*5;
+        goalStr=`${drivingLift}: ~${workW}lb × ${repForTarget} (1RM ${r.nextW}lb) → ${r.nextTier}`;
+      }
+    } else if(idx>=5){ goalStr='maxed — Elite'; }
+    const pct=Math.min(100,Math.round(lvl/5*100));
+    h+=`<div style="padding:11px 0;border-bottom:1px solid var(--line)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
+        <b style="font-size:14px">${label}</b><span class="tier tier-${tier}" style="font-size:11px;font-weight:800;padding:3px 9px;border-radius:20px">${tier}</span></div>
+      <div class="rank-bar" style="margin:0"><i style="width:${pct}%"></i></div>
+      ${goalStr?`<div class="small" style="margin-top:6px">Next: ${goalStr}</div>`:''}
+    </div>`;
+  });
+  h+=`</div>`;
+
+  // ---- Lift rankings (the assessed lifts, with progress bars) ----
   h+=`<div class="card"><div class="card-h"><div class="t">Lift Rankings</div></div>`;
   let any=false;
   for(const k in S.lifts){const l=S.lifts[k];if(!l||!l.weight)continue;any=true;
     const orm=epley1RM(+l.weight,+l.reps);const r=rankLift(k,orm);if(!r)continue;
+    const workW=r.nextW?Math.round(r.nextW/(1+10/30)/5)*5:null;
     h+=`<div style="padding:14px 0;border-bottom:1px solid var(--line)">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <b style="font-size:15px">${k}</b><span class="tier tier-${r.tier}" style="font-size:11px;font-weight:800;padding:3px 9px;border-radius:20px">${r.tier}</span></div>
       <div class="rank-bar" style="margin-top:0"><i style="width:${r.idx*20+r.pct*0.2}%"></i></div>
-      <div class="small" style="margin-top:6px">Est. 1RM <b style="color:var(--txt)">${orm}lb</b>${r.nextW?` · ${r.nextW}lb for ${r.nextTier}`:' · maxed'}</div>
+      <div class="small" style="margin-top:6px">Est. 1RM <b style="color:var(--txt)">${orm}lb</b>${r.nextW?` · hit <b style="color:var(--txt)">~${workW}lb × 10</b> (1RM ${r.nextW}lb) for <b style="color:var(--acc)">${r.nextTier}</b>`:' · maxed — Elite'}</div>
     </div>`;
   }
   if(!any)h+=`<p class="small">Log some workouts and your ranks will fill in.</p>`;
@@ -2218,27 +2782,49 @@ async function photoFeedback(id){
   const req=tx.objectStore('p').get(+id);
   req.onsuccess=async()=>{
     const p=req.result;if(!p)return;
-    const b64=(p.data||'').split(',')[1];
     modal(`<h3>⚡ Build Feedback</h3><p style="color:var(--txt2)">Coach is looking at your photo…</p>`);
+    const b64=await downscaleDataURL(p.data,1024,0.8); // shrink before sending
     const pri=(S.profile.priority||[]).map(m=>MUSCLE_LABELS[m]).join(', ')||'balanced development';
     const prompt=`You are this person's strength coach looking at their physique progress photo. They are ${S.profile.age}, ${S.profile.weight}lb, goal=${S.profile.goal}, and want to grow: ${pri}. Talk like a real coach — warm, direct, encouraging but honest. In 3-5 sentences: what looks like it's developing well, what's lagging and should get priority, and one concrete training or nutrition tip. No bullet points, no AI disclaimers, just talk to them like a person.`;
-    try{const fb=await geminiCall(prompt,b64);
+    try{const fb=await geminiCall(prompt,{b64,mime:'image/jpeg'});
       modal(`<h3>⚡ Build Feedback</h3><div style="background:var(--bg3);border-radius:12px;padding:14px;line-height:1.6;color:var(--txt)">${(fb||'Looking solid — keep training consistently.').replace(/\n/g,'<br>')}</div><button class="btn ghost" style="margin-top:16px" onclick="closeModal()">Got it</button>`);
     }catch(e){modal(`<h3>⚡ Build Feedback</h3><p style="color:var(--red)">${aiErrorMsg(e)}</p><button class="btn ghost" style="margin-top:14px" onclick="closeModal()">Close</button>`);}
   };
+}
+// shrink a data-URL image down to maxPx on the long side, return base64 (no prefix)
+function downscaleDataURL(dataURL,maxPx,quality){
+  return new Promise(res=>{
+    const img=new Image();
+    img.onload=()=>{
+      let {width:w,height:h}=img;
+      if(w>maxPx||h>maxPx){const r=Math.min(maxPx/w,maxPx/h);w=Math.round(w*r);h=Math.round(h*r);}
+      const c=document.createElement('canvas');c.width=w;c.height=h;
+      c.getContext('2d').drawImage(img,0,0,w,h);
+      res(c.toDataURL('image/jpeg',quality||0.8).split(',')[1]);
+    };
+    img.onerror=()=>res((dataURL||'').split(',')[1]);
+    img.src=dataURL;
+  });
 }
 
 /* ============================================================
    SETTINGS
    ============================================================ */
 function openSettings(){
+  const p=S.profile;
   modal(`<h3>Settings</h3>
+    <div class="field"><label>Your profile</label>
+      <button class="btn ghost" onclick="editProfile()">Edit my profile (age, weight, height)</button>
+      <p class="small" style="margin-top:8px">You're set as <b style="color:var(--acc)">${p.age}yo, ${p.weight}lb, ${p.heightFt}'${p.heightIn}"</b>. Keeping this current keeps your calories, BMI and strength ranks accurate.</p></div>
     <div class="field"><label>Gemini API Key (powers AI coaching)</label>
       <input class="inp" id="set_key" value="${S.settings.geminiKey||''}" placeholder="Paste your free key">
       <p class="small" style="margin-top:8px">Get a free key at <b style="color:var(--acc)">aistudio.google.com</b> → "Get API key". Stored only on this device.</p></div>
     <div class="field"><label>Notifications</label>
       <button class="btn ghost" onclick="enableNotifs()">${Notification.permission==='granted'?'✓ Enabled':'Enable reminders'}</button></div>
     <div class="divider"></div>
+    <div class="field"><label>Progressive overload</label>
+      <button class="btn ${S.settings.progressiveOverload?'':'ghost'}" onclick="toggleOverload()">${S.settings.progressiveOverload?'✓ On — auto-adjusts your weights':'Off — fixed default weights'}</button>
+      <p class="small" style="margin-top:8px">When on, after each workout I read what you actually lifted and adjust next time: hit the top of the rep range on every set → I add weight; drop below the bottom → I ease it down; in between → same weight, chase more reps. It only ever moves a weight you've proven you can handle.</p></div>
     <div class="field"><label>Goal</label><div class="chips">
       ${['bulk','cut','maintain'].map(g=>`<button class="chip ${S.profile.goal===g?'on':''}" onclick="changeGoal('${g}')">${g[0].toUpperCase()+g.slice(1)}</button>`).join('')}</div></div>
     <div class="field"><label>Equipment & program</label>
@@ -2250,7 +2836,48 @@ function openSettings(){
     <button class="btn ghost" style="margin-top:10px;color:var(--red)" onclick="resetApp()">Reset everything</button>
     <p class="small" style="text-align:center;margin-top:16px">FORGE · all data stored locally on your device</p>`);
 }
+// Edit core profile stats; recalculates everything that depends on them.
+function editProfile(){
+  const p=S.profile;
+  modal(`<h3>Edit profile</h3>
+    <div class="row" style="gap:10px">
+      <div class="field" style="flex:1"><label>Age</label><input class="inp" id="ep_age" type="number" inputmode="numeric" value="${p.age||''}"></div>
+      <div class="field" style="flex:1"><label>Weight (lb)</label><input class="inp" id="ep_wt" type="number" inputmode="decimal" value="${p.weight||''}"></div>
+    </div>
+    <div class="field"><label>Sex (for calorie & strength math)</label>
+      <div class="chips">${['male','female'].map(s=>`<button class="chip ${p.sex===s?'on':''}" data-epsex="${s}" onclick="$$('[data-epsex]').forEach(x=>x.classList.remove('on'));this.classList.add('on')">${s[0].toUpperCase()+s.slice(1)}</button>`).join('')}</div></div>
+    <div class="row" style="gap:10px">
+      <div class="field" style="flex:1"><label>Height ft</label><input class="inp" id="ep_ft" type="number" inputmode="numeric" value="${p.heightFt||''}"></div>
+      <div class="field" style="flex:1"><label>Height in</label><input class="inp" id="ep_in" type="number" inputmode="numeric" value="${p.heightIn||''}"></div>
+    </div>
+    <button class="btn" onclick="saveProfile()">Save profile</button>
+    <button class="btn ghost" style="margin-top:10px" onclick="openSettings()">Back</button>`);
+}
+function saveProfile(){
+  const age=+$('#ep_age').value, wt=+$('#ep_wt').value, ft=+$('#ep_ft').value, inch=+$('#ep_in').value;
+  if(!age||!wt||!ft){toast('Add age, weight and height','bad');return;}
+  S.profile.age=age; S.profile.weight=wt; S.profile.heightFt=ft; S.profile.heightIn=inch||0;
+  const sexBtn=$('[data-epsex].on'); if(sexBtn)S.profile.sex=sexBtn.dataset.epsex;
+  // weight feeds calories, BMI and strength ranks — refresh the meal plan target
+  S.nutrition.plan=buildLocalMeals();
+  // log this as the first bodyweight entry if none exists
+  S.body=S.body||{weight:[]}; S.body.weight=S.body.weight||[];
+  const today=todayStr();
+  const ex=S.body.weight.find(e=>e.date===today);
+  if(ex)ex.v=wt; else S.body.weight.push({date:today,v:wt});
+  save();closeModal();toast('Profile updated','good');
+  if(current==='home')renderHome();
+}
 // Edit equipment after onboarding, then offer a rebuild.
+function toggleOverload(){
+  S.settings.progressiveOverload=!S.settings.progressiveOverload;
+  // when turning on, give every program exercise a rep range to chase
+  if(S.settings.progressiveOverload&&S.program){
+    S.program.split.forEach(d=>d.exercises.forEach(e=>{if(!e.warmup&&!e.cardio&&!e.repRange)e.repRange=repRangeFor(e.reps||10);}));
+  }
+  save();openSettings();
+  toast(S.settings.progressiveOverload?'Progressive overload on':'Back to fixed weights','good');
+}
 function editEquipment(){
   const selected=new Set(S.profile.equipment||[]);
   let h=`<h3>Your equipment</h3><p style="color:var(--txt2);margin-bottom:12px">Tap to toggle. If you don't have a bench, leave it off and I'll never program flat barbell pressing.</p><div style="max-height:50vh;overflow-y:auto">`;
