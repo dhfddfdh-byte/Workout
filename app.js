@@ -14,6 +14,7 @@ const DEFAULT_STATE = {
   skipReasons:{},      // date -> reason the user gave for skipping
   skipAck:{},          // date -> true once acknowledged (stops nagging)
   coachSeen:{},        // dedupe: which skip dates the coach has already asked about
+  coachMemory:[],      // [{date, note}] things the user told the coach to remember
   active:null          // in-progress workout session
 };
 let S = load();
@@ -1580,7 +1581,7 @@ function renderCoachChat(){
   const msgs=coachChatLog.map((m,mi)=>m.role==='user'
     ?`<div style="text-align:right;margin:8px 0"><span style="display:inline-block;background:var(--acc);color:#0a0a0b;padding:9px 13px;border-radius:14px 14px 4px 14px;font-weight:600;max-width:85%;text-align:left">${m.text}${m.img?' 📷':''}${m.vid?' 🎥':''}</span></div>`
     :`<div style="margin:8px 0"><span style="display:inline-block;background:var(--card2);padding:9px 13px;border-radius:14px 14px 14px 4px;max-width:85%">${m.text.replace(/\n/g,'<br>')}</span>${m.actions?m.actions.map((a,ai)=>actionButton(a,mi,ai)).join(''):''}</div>`
-  ).join('')||'<p class="small" style="text-align:center;padding:20px">Talk to your coach like a real person — "this left me out of breath", "I don\'t have a bench", "my shoulder feels off", "give me an extra ab move". Attach a 📷 photo for physique/form feedback or a 🎥 short video for a form check. When the advice means changing your plan, you\'ll get a button to apply it.</p>';
+  ).join('')||'<p class="small" style="text-align:center;padding:20px">Talk to your coach like a real person — tell it how a workout went ("bench felt heavy today, only got 6 reps"), "my shoulder feels off", "I don\'t have a bench". It remembers what you tell it for next time. Attach a 📷 photo or 🎥 short video for form feedback. When advice means changing your plan, you\'ll get a button to apply it.</p>';
   modal(`<h3>💬 Coach Chat</h3>
     <div id="chatScroll" style="max-height:44vh;overflow-y:auto;margin-bottom:12px">${msgs}</div>
     <div id="chatImgPreview"></div>
@@ -1667,7 +1668,9 @@ IMPORTANT — when your advice means actually editing their program, append the 
 - Swap one exercise for another: [[SWAP:current exercise|new exercise]]
 - Add an exercise: [[ADD:muscle|new exercise]]  (muscle one of: chest,back,quads,hamstrings,glutes,frontDelt,sideDelt,rearDelt,biceps,triceps,forearms,abs,calves)
 - Remove an exercise: [[REMOVE:exercise name]]
-Examples: [[SWAP:Barbell Bench Press|Push-up]]   [[ADD:abs|Plank]]   [[REMOVE:Standing Calf Raise]]`;
+- Remember something for future sessions (an injury, a preference, what happened in a workout, a goal): [[REMEMBER:the fact to remember]]
+Examples: [[SWAP:Barbell Bench Press|Push-up]]   [[ADD:abs|Plank]]   [[REMEMBER:Right shoulder clicks on overhead press — keep volume moderate]]
+Whenever the client tells you something worth carrying into future sessions (how a workout went, an injury, equipment change, a preference), ALWAYS save it with [[REMEMBER:...]].`;
   try{
     const raw=await geminiCall(ctx,media);
     // pull out any directives
@@ -1677,10 +1680,20 @@ Examples: [[SWAP:Barbell Bench Press|Push-up]]   [[ADD:abs|Plank]]   [[REMOVE:St
       .replace(/\[\[SWAP:([^|\]]+)\|([^\]]+)\]\]/g,(m,oldN,newN)=>{actions.push({kind:'swap',name:oldN.trim(),to:newN.trim()});return '';})
       .replace(/\[\[ADD:([^|\]]+)\|([^\]]+)\]\]/g,(m,mus,newN)=>{actions.push({kind:'add',muscle:mus.trim(),to:newN.trim()});return '';})
       .replace(/\[\[REMOVE:([^\]]+)\]\]/g,(m,name)=>{actions.push({kind:'remove',name:name.trim()});return '';})
+      .replace(/\[\[REMEMBER:([^\]]+)\]\]/g,(m,note)=>{rememberNote(note.trim());return '';})
       .trim();
     coachChatLog[coachChatLog.length-1]={role:'coach',text:clean||'Got it.',actions:actions.length?actions:null};
   }catch(e){coachChatLog[coachChatLog.length-1]={role:'coach',text:aiErrorMsg(e)};}
   renderCoachChat();
+}
+// save a fact the coach should carry into future sessions (deduped)
+function rememberNote(note){
+  if(!note)return;
+  S.coachMemory=S.coachMemory||[];
+  if(S.coachMemory.some(m=>m.note.toLowerCase()===note.toLowerCase()))return;
+  S.coachMemory.push({date:todayStr(),note});
+  if(S.coachMemory.length>40)S.coachMemory=S.coachMemory.slice(-40);
+  save();
 }
 // Everything the coach should know about the client — history, ratings,
 // skipped days, and current muscle rankings. So it can react without being asked.
@@ -1704,11 +1717,15 @@ function coachContext(){
   const ms=muscleStrength();
   const ranks=Object.keys(ms).map(m=>`${MUSCLE_LABELS[m]||m}: ${TIERS[Math.min(5,Math.round(ms[m]))]}`).join(', ')||'not assessed yet';
   const lifts=Object.entries(S.lifts).map(([k,v])=>v.unknown?`${k}: never done`:`${k}: ${v.weight}×${v.reps}`).join(', ')||'none';
+  // things the client previously asked the coach to remember
+  const mem=(S.coachMemory||[]).slice(-12).map(m=>`${m.date}: ${m.note}`).join('\n')||'nothing noted yet';
   return `CLIENT PROFILE: ${p.age}yo ${p.sex}, ${p.weight}lb, goal=${p.goal}, experience=${p.experience}, trains ${p.days}d/wk ~${p.workoutMin}min. Progressive overload is ${S.settings.progressiveOverload?'ON':'OFF'}.
 GYM: ${(p.equipment||[]).join(', ')||'bodyweight only'}${p.barbellMax?` (barbell to ${p.barbellMax}lb)`:''}.
 ASSESSED LIFTS: ${lifts}.
 MUSCLE RANKINGS: ${ranks}.
 CURRENT PROGRAM: ${prog}.
+THINGS TO REMEMBER ABOUT THIS CLIENT (they told you these — use them):
+${mem}
 RECENT SESSIONS (most recent last):
 ${recent}
 SKIPPED SCHEDULED DAYS:
@@ -2234,7 +2251,7 @@ function startSession(idx){
     exercises:d.exercises.map(e=>(e.warmup||e.cardio)
       ? {name:e.name,muscle:e.muscle,cue:e.cue,warmup:e.warmup,cardio:e.cardio,items:e.items,done:false}
       : {name:e.name,muscle:e.muscle,cue:e.cue,rest:e.rest,target:e.reps,repRange:e.repRange,reps:e.reps,
-         sets:Array.from({length:e.sets},()=>({weight:e.weight,reps:'',type:'normal',done:false}))}),
+         sets:Array.from({length:e.sets},()=>({weight:e.weight,reps:e.reps||'',type:'normal',done:false}))}),
     difficulty:{start:null,mid:null,end:null}};
   save();renderActiveSession();
 }
@@ -2266,8 +2283,7 @@ function renderActiveSession(){
         <input class="set-inp" inputmode="decimal" value="${s.weight||''}" placeholder="lb" onchange="setVal(${ei},${si},'weight',this.value)">
         <span class="set-x">×</span>
         <input class="set-inp" inputmode="numeric" value="${s.reps||''}" placeholder="reps" onchange="setVal(${ei},${si},'reps',this.value)">
-        <button class="set-tag" onclick="cycleType(${ei},${si})">${s.type==='normal'?'SET':s.type.toUpperCase()}</button>
-        <button class="set-done ${s.done?'on':''}" onclick="toggleSet(${ei},${si})"><svg viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7"/></svg></button>
+        <button class="set-done ${s.done?'on':''}" onclick="toggleSet(${ei},${si})" aria-label="mark set done"><svg viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7"/></svg></button>
       </div>`;
     });
     h+=`<button class="addset" onclick="addSet(${ei})">+ Add Set</button></div>`;
@@ -2312,8 +2328,19 @@ function skipRest(){clearInterval(rest.timer);$('#restTimer').classList.remove('
 /* ---------- FINISH SESSION → log, PRs, AI feedback ---------- */
 async function finishSession(){
   const a=S.active;
-  const anyDone=a.exercises.some(e=>!e.warmup&&e.sets&&e.sets.some(s=>s.done&&s.reps));
-  if(!anyDone){toast('Log at least one set first','bad');return;}
+  // A set counts as completed if it's checked OR has reps filled in. If reps were
+  // left blank on a checked set, fall back to the target. This way a workout that's
+  // clearly been filled out always saves, whether or not you tapped every checkmark.
+  a.exercises.forEach(e=>{
+    if(e.warmup||e.cardio||!e.sets)return;
+    e.sets.forEach(s=>{
+      const hasReps=s.reps!=='' && s.reps!=null && +s.reps>0;
+      if(hasReps && !s.done) s.done=true;
+      if(s.done && !hasReps) s.reps=e.target||e.reps||0;
+    });
+  });
+  const anyDone=a.exercises.some(e=>!e.warmup&&e.sets&&e.sets.some(s=>s.done && +s.reps>0));
+  if(!anyDone){toast('Fill in or check off at least one set first','bad');return;}
   // detect PRs
   const newPRs=[];
   a.exercises.forEach(e=>{
@@ -2364,6 +2391,8 @@ async function finishSession(){
   }
 
   go('home');toast('Workout saved!','good');
+  // offer a quick debrief the coach will remember for next time
+  setTimeout(()=>offerDebrief(finishedLog),2400);
 
   // if we flagged a recovery day, let them know
   if(finishedLog._recoveryFlagged){
@@ -2407,6 +2436,31 @@ async function finishSession(){
       if(fb){finishedLog.coachFeedback=fb;save();
         modal(`<h3>⚡ Coach Feedback</h3><div class="coach" style="margin:0"><p>${fb}</p></div><button class="btn ghost" style="margin-top:16px" onclick="closeModal()">Got it</button>`);}
     }catch(e){/* offline / no key — fine */}
+  }
+}
+// After a workout, let the user tell the coach how it went in their own words.
+// It's saved to coach memory (works offline) and, with a key, the coach replies.
+function offerDebrief(log){
+  if(document.querySelector('#modalBg.show'))return; // don't stack on PR/overload modals
+  modal(`<h3>How'd that go?</h3>
+    <p class="small" style="margin-bottom:12px">Tell your coach anything about today's ${log.name||'workout'} — what felt strong, what was rough, any pain or PRs. It'll remember this for next time.</p>
+    <textarea class="inp" id="debrief" rows="3" placeholder="e.g. floor press felt easy, shoulders smoked by the end, left elbow a little sore on curls"></textarea>
+    <button class="btn" style="margin-top:12px" onclick="saveDebrief('${(log.name||'').replace(/'/g,"")}')">Save & tell coach</button>
+    <button class="btn ghost" style="margin-top:10px" onclick="closeModal()">Skip</button>`);
+}
+async function saveDebrief(name){
+  const t=($('#debrief').value||'').trim();
+  if(!t){closeModal();return;}
+  rememberNote(`${name||'Workout'} — ${t}`);
+  closeModal();
+  if(S.settings.geminiKey&&navigator.onLine){
+    toast('Saved — coach is reading it','good');
+    try{
+      const reply=await geminiCall(`${coachContext()}\n\nThe client just finished "${name}" and told you: "${t}". Acknowledge like their coach in 1-2 sentences and say how it affects next session. No lists.`);
+      if(reply)modal(`<h3>💬 Coach</h3><div class="coach" style="margin:0"><p>${reply.replace(/\[\[[^\]]*\]\]/g,'').trim()}</p></div><button class="btn ghost" style="margin-top:16px" onclick="closeModal()">Got it</button>`);
+    }catch(e){/* note still saved */}
+  } else {
+    toast('Saved — your coach will remember this','good');
   }
 }
 /* ---- Gemini auto-call debounce: at most one automatic call per slot per day ---- */
