@@ -1111,7 +1111,13 @@ async function buildProgram(){
    ============================================================ */
 const GEMINI_MODEL='gemini-2.5-flash';
 const GEMINI_URL='https://generativelanguage.googleapis.com/v1beta/models/'+GEMINI_MODEL+':generateContent?key=';
-const COACH_PERSONA=`You are a real strength coach texting with your client — talk like an actual human, not an AI assistant. Warm, direct, encouraging, a little informal. Use plain language a normal person uses at the gym. NEVER say you're an AI, never give disclaimers, never use bullet points or headers in chat — just talk. Keep it to 2-4 sentences unless they ask for detail. You know your stuff (progressive overload, recovery, rep ranges, form) but you explain it simply. You're honest: if they should drop a weight, deload, rest, or fix form, you tell them straight — kindly. Give concrete, doable advice like "drop to a weight where the last two reps are hard but clean, then build back up." Never invent numbers — work from what they tell you.`;
+const COACH_PERSONA=`You are this person's real strength coach, texting them. Talk like an actual human texting — warm, direct, a bit casual, varied. Never sound scripted: don't open every message the same way ("Alright,", "Got it,", "No worries"), don't repeat stock phrases, and match their energy. NEVER say you're an AI, never give disclaimers, never use bullet points or headers — just talk like a person who knows them.
+
+Keep replies short (2-4 sentences) unless they ask for detail. You know your stuff — progressive overload, recovery, rep ranges, form, fixing imbalances — but explain it simply. Be honest and decisive: if they should drop weight, deload, swap an exercise, rest, or fix form, say it straight.
+
+BE DECISIVE WITH CHANGES. If they tell you they don't have a piece of equipment, something hurts, or they want a different exercise, make the change RIGHT THERE in the same reply using the directives — don't say "we'll change it" and wait. Pick the specific replacement yourself and attach the directive so they just tap to apply. One reply, decision made.
+
+Use what you remember about them (injuries, imbalances, how recent sessions felt, skipped days, what they've told you) so it feels like you actually know them. Work only from real numbers they've given you — never invent stats.`;
 async function geminiCall(prompt, media){
   if(!S.settings.geminiKey) throw new Error('no key');
   const parts=[{text:prompt}];
@@ -1123,16 +1129,26 @@ async function geminiCall(prompt, media){
     const clean=String(b64).replace(/^data:[^,]+,/,''); // strip any data-URL prefix
     parts.push({inline_data:{mime_type:mime,data:clean}});
   }
+  const cfg={temperature:0.85,topP:0.95,maxOutputTokens:2048};
+  const payload=(extra)=>JSON.stringify({systemInstruction:{parts:[{text:COACH_PERSONA}]},contents:[{parts}],generationConfig:Object.assign({},cfg,extra)});
   let r;
   try{
     r=await fetch(GEMINI_URL+S.settings.geminiKey,{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({systemInstruction:{parts:[{text:COACH_PERSONA}]},contents:[{parts}],generationConfig:{temperature:0.7,maxOutputTokens:700}})});
+      body:payload({thinkingConfig:{thinkingBudget:0}})});
+    // some key/model versions reject thinkingConfig — retry once without it
+    if(r.status===400){
+      r=await fetch(GEMINI_URL+S.settings.geminiKey,{method:'POST',headers:{'Content-Type':'application/json'},body:payload()});
+    }
   }catch(e){throw new Error('network');}
-  if(r.status===400||r.status===403)throw new Error('badkey');
+  if(r.status===403)throw new Error('badkey');
+  if(r.status===400)throw new Error('badkey');
   if(r.status===429)throw new Error('limit');
   if(!r.ok)throw new Error('gemini '+r.status);
   const d=await r.json();
-  return d.candidates?.[0]?.content?.parts?.[0]?.text||'';
+  // join ALL text parts (not just the first) so long replies aren't clipped
+  const cand=d.candidates?.[0];
+  const txt=(cand?.content?.parts||[]).map(p=>p.text||'').join('').trim();
+  return txt;
 }
 // human-friendly explanation of why an AI call failed
 function aiErrorMsg(e){
@@ -1234,28 +1250,67 @@ function todaysWorkout(){
   if(slot.type==='rest')return {rest:true};
   return {rest:false, ...S.program.split[slot.idx], idx:slot.idx};
 }
+// did the user already log a workout today?
+function trainedToday(){ return (S.logs||[]).some(l=>l.date===todayStr()); }
+// find the NEXT upcoming training day (skipping recovery overrides and rest days),
+// starting tomorrow. Returns {date,dow,dowName,idx,name,daysAway} or null.
+function nextScheduledWorkout(){
+  if(!S.program)return null;
+  const names=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  for(let i=1;i<=14;i++){
+    const dt=new Date();dt.setDate(dt.getDate()+i);
+    const ds=dt.toISOString().slice(0,10);
+    const ov=(S.program.overrides||{})[ds];
+    if(ov==='recovery')continue;
+    const dow=(dt.getDay()+6)%7;
+    const slot=S.program.schedule[dow];
+    if(slot && slot.type==='train'){
+      const d=S.program.split[slot.idx];
+      return {date:ds,dow,dowName:names[dow],idx:slot.idx,name:d.name,daysAway:i};
+    }
+  }
+  return null;
+}
 // Adaptive rest: after a hard/high-volume session, flag tomorrow as recovery.
+// Decide whether the user even needs to be ASKED about recovery. We no longer
+// auto-rest after a single workout. We score how wrecked they are from the three
+// check-ins; only a genuinely brutal session triggers the "could you do more?"
+// question — and THEIR answer (in decideRecovery) makes the final call.
+function fatigueScore(log){
+  const map={easy:0,moderate:1,hard:2,max:3};
+  const d=log.difficulty||{};
+  return (map[d.start]||0)+(map[d.mid]||0)+(map[d.end]||0); // 0..9
+}
 function applyAdaptiveRest(log){
   if(!S.program)return;
   S.program.overrides=S.program.overrides||{};
+  const score=fatigueScore(log);
   const d=log.difficulty||{};
-  const hardEnd = d.end==='max' || d.mid==='max';
-  const ratings=[d.start,d.mid,d.end].filter(Boolean);
-  const hardCount=ratings.filter(r=>r==='hard'||r==='max').length;
-  // recent volume spike check
-  const recent=S.logs.slice(-6).map(l=>l.volume||0).filter(v=>v>0);
-  const avgVol=recent.length?recent.reduce((a,b)=>a+b,0)/recent.length:0;
-  const spike = avgVol>0 && (log.volume||0) > avgVol*1.4;
-  if(hardEnd || hardCount>=2 || spike){
-    // mark tomorrow as a recovery day (only if it was a training day)
-    const tmr=new Date();tmr.setDate(tmr.getDate()+1);
-    const ts=tmr.toISOString().slice(0,10);
-    const dow=(tmr.getDay()+6)%7;
-    if(S.program.schedule[dow].type==='train' && !S.program.overrides[ts]){
+  const anyMax=d.start==='max'||d.mid==='max'||d.end==='max';
+  // Only ASK about recovery when it was clearly hard: total score >=5 (e.g.
+  // hard/destroyed/destroyed = 2+3+3=8) or any "destroyed me" rating present.
+  // Otherwise: no rest day, next scheduled workout stands.
+  if(score>=5 || anyMax){
+    log._askRecovery=true;   // the post-workout queue will ask "could you do more?"
+  }
+}
+// Called from the recovery question. If they say they had more in the tank, we
+// trust them and keep training scheduled. If they're cooked, we set a recovery day.
+function decideRecovery(log, couldDoMore){
+  if(!S.program)return;
+  S.program.overrides=S.program.overrides||{};
+  if(couldDoMore)return; // keep next workout as scheduled
+  // they're wiped — set the next TRAINING day to recovery
+  for(let i=1;i<=3;i++){
+    const dt=new Date();dt.setDate(dt.getDate()+i);
+    const ts=dt.toISOString().slice(0,10);
+    const dow=(dt.getDay()+6)%7;
+    if(S.program.schedule[dow] && S.program.schedule[dow].type==='train' && !S.program.overrides[ts]){
       S.program.overrides[ts]='recovery';
-      log._recoveryFlagged=true;
+      break;
     }
   }
+  save();
 }
 // If user trains on a scheduled rest day, reflow: mark today trained, give back a rest day later in week.
 function reflowForOffSchedule(dateStr){
@@ -1719,7 +1774,7 @@ function coachContext(){
   const lifts=Object.entries(S.lifts).map(([k,v])=>v.unknown?`${k}: never done`:`${k}: ${v.weight}×${v.reps}`).join(', ')||'none';
   // things the client previously asked the coach to remember
   const mem=(S.coachMemory||[]).slice(-12).map(m=>`${m.date}: ${m.note}`).join('\n')||'nothing noted yet';
-  return `CLIENT PROFILE: ${p.age}yo ${p.sex}, ${p.weight}lb, goal=${p.goal}, experience=${p.experience}, trains ${p.days}d/wk ~${p.workoutMin}min. Progressive overload is ${S.settings.progressiveOverload?'ON':'OFF'}.
+  return `CLIENT PROFILE: ${p.age}yo ${p.sex}, ${p.weight}lb, goal=${p.goal}, experience=${p.experience}, trains ${p.days}d/wk ~${p.workoutMin}min. Progressive overload is ${S.settings.progressiveOverload?'ON':'OFF'}.${p.injuries?`\nINJURIES / WORK AROUND: ${p.injuries}.`:''}${p.imbalances?`\nMUSCLE IMBALANCE: ${p.imbalances}. Keep both sides the SAME weight (never lighter on the weak side); have the weaker side set the rep count so it catches up; prefer dumbbell/single-arm work over barbell for those muscles${p.imbalanceAccelerator?'; one bonus set on the weak side is on':''}.`:''}
 GYM: ${(p.equipment||[]).join(', ')||'bodyweight only'}${p.barbellMax?` (barbell to ${p.barbellMax}lb)`:''}.
 ASSESSED LIFTS: ${lifts}.
 MUSCLE RANKINGS: ${ranks}.
@@ -1917,48 +1972,90 @@ function renderWorkout(){
   }
   let h=`<div class="page"><div class="topbar"><div><div class="sub">Training</div><h1>Workout</h1></div></div>`;
 
-  // day selector
-  h+=`<div class="tabs" id="dayTabs">`;
-  S.program.split.forEach((d,i)=>{h+=`<button class="${workout&&workout.idx===i?'on':''}" onclick="previewDay(${i})">${d.name}</button>`;});
-  h+=`</div><div id="dayPreview"></div></div>`;
+  const today=todaysWorkout();
+  const did=trainedToday();
+  const next=nextScheduledWorkout();
+
+  // ---- TODAY ----
+  if(did){
+    // already trained today — show what they did, and surface the NEXT one as start-early
+    h+=`<div class="card" style="border-color:var(--good)">
+      <div style="display:flex;align-items:center;gap:10px"><span style="font-size:22px">✅</span>
+        <div><div class="sub" style="color:var(--good)">Today — done</div><div class="disp" style="font-size:22px">Nice work, that's logged</div></div></div>
+      <p class="small" style="margin-top:8px">Rest up, or if you're feeling good you can pull your next session forward below.</p>
+    </div>`;
+  } else if(today&&today.recovery){
+    h+=`<div class="card">
+      <div class="sub" style="color:var(--amber)">Today</div><div class="disp" style="font-size:22px">🛌 Recovery day</div>
+      <p class="small" style="margin-top:6px">You earned this — light walking or stretching is great. Feeling fresh and want to train anyway?</p>
+      ${next?`<button class="btn ghost" style="margin-top:12px" onclick="startEarly(${next.idx},'${next.date}')">Train ${next.name} anyway</button>`:''}
+    </div>`;
+  } else if(today&&today.rest){
+    h+=`<div class="card">
+      <div class="sub">Today</div><div class="disp" style="font-size:22px">😌 Scheduled rest</div>
+      <p class="small" style="margin-top:6px">No workout on the plan today.</p>
+      ${next?`<button class="btn ghost" style="margin-top:12px" onclick="startEarly(${next.idx},'${next.date}')">Do ${next.name} early</button>`:''}
+    </div>`;
+  } else if(today&&!today.rest){
+    const d=S.program.split[today.idx];
+    const workCount=d.exercises.filter(e=>!e.warmup&&!e.cardio).length;
+    h+=`<div class="card" style="border-color:var(--acc2)">
+      <div class="sub" style="color:var(--acc)">Today's workout</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px">
+        <div class="disp" style="font-size:24px">${d.name}</div>
+        <button onclick="toggleFav('${d.name}')" style="font-size:22px">${S.favorites.includes(d.name)?'★':'☆'}</button></div>
+      <p class="small" style="margin:4px 0 14px">Warm-up + ${workCount} exercises · ~${S.program.workoutMin||45} min</p>
+      <button class="btn" onclick="startSession(${today.idx})">Start This Workout</button>
+      <button class="btn ghost" style="margin-top:10px" onclick="previewWorkout(${today.idx})">Preview exercises</button>
+    </div>`;
+  }
+
+  // ---- NEXT SCHEDULED ----
+  if(next){
+    const nd=S.program.split[next.idx];
+    const nc=nd.exercises.filter(e=>!e.warmup&&!e.cardio).length;
+    const whenTxt = next.daysAway===1?`Tomorrow (${next.dowName})`:`${next.dowName}, in ${next.daysAway} days`;
+    h+=`<div class="card">
+      <div class="sub">Up next · ${whenTxt}</div>
+      <div class="disp" style="font-size:20px;margin-top:2px">${next.name}</div>
+      <p class="small" style="margin:4px 0 12px">Warm-up + ${nc} exercises</p>
+      <button class="btn ghost" onclick="startEarly(${next.idx},'${next.date}')">${did||(today&&today.rest)?'Do this now':'Start early'}</button>
+      <button class="btn ghost" style="margin-top:8px" onclick="previewWorkout(${next.idx})">Preview exercises</button>
+    </div>`;
+  }
+
+  // ---- pick any other day ----
+  h+=`<div class="card"><div class="card-h"><div class="t">All workout days</div></div>
+    <div class="chips">${S.program.split.map((d,i)=>`<button class="chip" onclick="previewWorkout(${i})">${d.name}</button>`).join('')}</div></div>`;
+
+  h+=`</div>`;
   $('#s_workout').innerHTML=h;
-  previewDay(workout?workout.idx:0);
 }
-function previewDay(idx){
-  $$('#dayTabs button').forEach((b,i)=>b.classList.toggle('on',i===idx));
+// preview a day's exercises in a modal
+function previewWorkout(idx){
   const d=S.program.split[idx];
-  const fav=S.favorites.includes(d.name);
-  const workCount=d.exercises.filter(e=>!e.warmup&&!e.cardio).length;
-  let h=`<div class="card" style="border-color:var(--acc2)">
-    <div style="display:flex;justify-content:space-between;align-items:center">
-      <div class="disp" style="font-size:24px">${d.name}</div>
-      <button onclick="toggleFav('${d.name}')" style="font-size:22px">${fav?'★':'☆'}</button>
-    </div>
-    <p class="small" style="margin:4px 0 14px">Warm-up + ${workCount} exercises · ~${S.program.workoutMin||60} min</p>
-    <button class="btn" onclick="startSession(${idx})">Start This Workout</button>
-  </div>`;
+  let h=`<h3>${d.name}</h3>`;
   d.exercises.forEach(e=>{
-    if(e.warmup){
-      h+=`<div class="ex-card" style="border-color:var(--acc2)"><div class="ex-head">
-        <div><div class="nm">🔥 ${e.name}</div><div class="meta">~8 min · primes the joints</div></div>
-        <span class="ex-musc">Warm-up</span></div></div>`;
-      return;
-    }
-    if(e.cardio){
-      h+=`<div class="ex-card" style="border-color:var(--acc2)"><div class="ex-head">
-        <div><div class="nm">🏃 ${e.name}</div><div class="meta">${e.reps} · optional finisher</div></div>
-        <span class="ex-musc">Cardio</span></div></div>`;
-      return;
-    }
-    const loadStr=e.weight!=null?`start ${e.weight}lb`:'bodyweight / your load';
-    h+=`<div class="ex-card"><div class="ex-head">
-      <div><div class="nm">${e.name}${e.priority?' <span style="color:var(--acc);font-size:12px">★ priority</span>':''}</div>
-        <div class="meta">${e.sets} × ${repLabel(e)} reps · <button onclick="pickWeight('${d.name.replace(/'/g,"")}','${e.name.replace(/'/g,"")}')" style="color:var(--acc);font-weight:700;text-decoration:underline">${loadStr}</button></div></div>
-      <button class="ex-musc" onclick="showForm('${e.name.replace(/'/g,"")}','${e.muscle}')">${MUSCLE_LABELS[e.muscle]}</button>
-    </div></div>`;
+    if(e.warmup){h+=`<div style="padding:8px 0;border-bottom:1px solid var(--line)"><b>🔥 Warm-up</b><div class="small">${(e.items||[]).slice(0,2).join(' · ')}…</div></div>`;return;}
+    if(e.cardio){h+=`<div style="padding:8px 0;border-bottom:1px solid var(--line)"><b>🏃 Finisher</b></div>`;return;}
+    h+=`<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
+      <div><b style="font-size:14px">${e.name}</b><div class="small">${MUSCLE_LABELS[e.muscle]||''}</div></div>
+      <div style="text-align:right;white-space:nowrap;margin-left:10px;font-weight:700">${e.weight!=null?e.weight+'lb':'BW'}<div class="small">${e.sets}×${repLabel(e)}</div></div></div>`;
   });
-  $('#dayPreview').innerHTML=h;
+  h+=`<button class="btn" style="margin-top:16px" onclick="closeModal();startSession(${idx})">Start This Workout</button>
+    <button class="btn ghost" style="margin-top:10px" onclick="closeModal()">Close</button>`;
+  modal(h);
 }
+// start a workout that isn't today's scheduled one — note it and ask why (off-schedule)
+function startEarly(idx,dateStr){
+  // mark that this scheduled day got pulled forward so it won't double-show
+  S.program.overrides=S.program.overrides||{};
+  if(dateStr)S.program.pulledForward=dateStr;
+  save();
+  startSession(idx);
+  S.active._offSchedule=true; save();
+}
+function previewDay(idx){ previewWorkout(idx); }
 // let the user pick the exact weight they want for an exercise (only weights they own + custom)
 function pickWeight(dayName,exName){
   const day=S.program.split.find(d=>d.name===dayName);if(!day)return;
@@ -1980,7 +2077,7 @@ function setExWeight(dayName,exName,w){
   if(w===null){ex.weight=null;}
   else{if(!w||w<=0){toast('Enter a weight','bad');return;}ex.weight=w;}
   save();closeModal();
-  const idx=S.program.split.indexOf(day);previewDay(idx);
+  toast('Weight set','good');renderWorkout();
   toast('Weight updated','good');
 }
 function toggleFav(name){const i=S.favorites.indexOf(name);if(i>=0)S.favorites.splice(i,1);else S.favorites.push(name);save();previewDay(S.program.split.findIndex(d=>d.name===name));toast(i>=0?'Removed favorite':'Added to favorites ★');}
@@ -2277,6 +2374,10 @@ function renderActiveSession(){
     h+=`<div class="ex-card">
       <div class="ex-head"><div><div class="nm">${e.name}</div><div class="meta">target ${e.target} reps</div></div>
       <button class="ex-musc" onclick="showForm('${e.name.replace(/'/g,"")}','${e.muscle}')">${MUSCLE_LABELS[e.muscle]}</button></div>`;
+    // imbalance reminder on dumbbell/single-arm moves
+    if(S.profile.imbalances && /dumbbell|curl|hammer|lateral|raise|press|fly|row|extension|kickback/i.test(e.name) && !/barbell/i.test(e.name)){
+      h+=`<div style="margin:0 12px 6px;background:var(--accdim);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--txt2)">⚖️ Same weight both sides — let your weaker side set the reps${S.profile.imbalanceAccelerator?', then one bonus set on the weak side':''}.</div>`;
+    }
     e.sets.forEach((s,si)=>{
       h+=`<div class="set-row">
         <div class="si">${si+1}</div>
@@ -2375,92 +2476,125 @@ async function finishSession(){
   clearSkipFor(finishedLog.date);
 
   S.active=null;save();
-
-  // celebrate PRs with a real moment
-  if(newPRs.length){
-    setTimeout(()=>{
-      const rows=newPRs.slice(0,5).map(n=>{const pr=S.prs[n];
-        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--line)">
-          <b>${n}</b><span style="color:var(--acc);font-weight:800;white-space:nowrap;margin-left:10px">${pr.weight}lb × ${pr.reps}</span></div>`;}).join('');
-      modal(`<div style="text-align:center;font-size:44px;margin-bottom:4px">🏆</div>
-        <h3 style="text-align:center">New Personal Record${newPRs.length>1?'s':''}!</h3>
-        <p class="small" style="text-align:center;margin-bottom:12px">You just lifted heavier than ever before. This is what progress looks like.</p>
-        ${rows}
-        <button class="btn" style="margin-top:16px" onclick="closeModal()">Let's go 💪</button>`);
-    },500);
-  }
-
   go('home');toast('Workout saved!','good');
-  // offer a quick debrief the coach will remember for next time
-  setTimeout(()=>offerDebrief(finishedLog),2400);
 
-  // if we flagged a recovery day, let them know
-  if(finishedLog._recoveryFlagged){
-    setTimeout(()=>toast('Hard session logged — I set tomorrow as recovery 🛌','good'),1400);
+  // Build a QUEUE of post-workout cards and show them one at a time — each card's
+  // button advances to the next, so nothing flashes by or gets dismissed early.
+  const queue=[];
+
+  if(newPRs.length){
+    const rows=newPRs.slice(0,5).map(n=>{const pr=S.prs[n];
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--line)">
+        <b>${n}</b><span style="color:var(--acc);font-weight:800;white-space:nowrap;margin-left:10px">${pr.weight}lb × ${pr.reps}</span></div>`;}).join('');
+    queue.push({html:`<div style="text-align:center;font-size:44px;margin-bottom:4px">🏆</div>
+      <h3 style="text-align:center">New Personal Record${newPRs.length>1?'s':''}!</h3>
+      <p class="small" style="text-align:center;margin-bottom:12px">You just lifted heavier than ever before. This is what progress looks like.</p>${rows}`, btn:"Let's go 💪"});
   }
 
-  // show progressive-overload adjustments so the change is transparent
   if(progChanges.length){
-    setTimeout(()=>{
-      const rows=progChanges.map(c=>{
-        const arrow=c.action==='up'?'▲':c.action==='down'?'▼':'■';
-        const col=c.action==='up'?'var(--good)':c.action==='down'?'var(--amber)':'var(--txt2)';
-        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--line)">
-          <div><div style="font-weight:700">${c.name}</div><div class="small">${c.note}</div></div>
-          <div style="color:${col};font-weight:800;white-space:nowrap;margin-left:10px">${c.from}→${c.to}<span style="font-size:11px"> lb ${arrow}</span></div></div>`;
-      }).join('');
-      modal(`<h3>📈 Progressive Overload</h3><p class="small" style="margin-bottom:8px">Next time, based on what you actually lifted:</p>${rows}
-        <button class="btn ghost" style="margin-top:16px" onclick="closeModal()">Got it</button>`);
-    },900);
+    const rows=progChanges.map(c=>{
+      const arrow=c.action==='up'?'▲':c.action==='down'?'▼':'■';
+      const col=c.action==='up'?'var(--good)':c.action==='down'?'var(--amber)':'var(--txt2)';
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--line)">
+        <div><div style="font-weight:700">${c.name}</div><div class="small">${c.note}</div></div>
+        <div style="color:${col};font-weight:800;white-space:nowrap;margin-left:10px">${c.from}→${c.to}<span style="font-size:11px"> lb ${arrow}</span></div></div>`;
+    }).join('');
+    queue.push({html:`<h3>📈 Progressive Overload</h3><p class="small" style="margin-bottom:8px">Next time, based on what you actually lifted:</p>${rows}`, btn:'Got it'});
   }
 
-  // stall/deload alert — if a lift has plateaued, suggest backing off to break through
   const stalls=detectStalls();
   if(stalls.length){
-    setTimeout(()=>{
-      const rows=stalls.map(s=>`<div style="padding:10px 0;border-bottom:1px solid var(--line)">
-        <div style="font-weight:700">${s.name} <span class="tag" style="background:var(--amber);color:#2a1d05;font-size:10px;padding:2px 7px;border-radius:10px;margin-left:6px">STALLED</span></div>
-        <div class="small" style="margin-top:4px">${s.note}</div>
-        ${S.settings.progressiveOverload?`<button class="btn sm" style="margin-top:8px;font-size:12px;padding:7px 12px" onclick="applyDeload('${s.name.replace(/'/g,"")}',${s.deloadW});closeModal()">✓ Deload ${s.name} to ${s.deloadW}lb</button>`:''}
-      </div>`).join('');
-      modal(`<h3>🧱 Hit a wall?</h3><p class="small" style="margin-bottom:8px">A lift has stalled. The fix isn't pushing harder — it's backing off to build momentum:</p>${rows}
-        <button class="btn ghost" style="margin-top:16px" onclick="closeModal()">Got it</button>`);
-    },progChanges.length?1700:900);
+    const rows=stalls.map(s=>`<div style="padding:10px 0;border-bottom:1px solid var(--line)">
+      <div style="font-weight:700">${s.name} <span class="tag" style="background:var(--amber);color:#2a1d05;font-size:10px;padding:2px 7px;border-radius:10px;margin-left:6px">STALLED</span></div>
+      <div class="small" style="margin-top:4px">${s.note}</div>
+      ${S.settings.progressiveOverload?`<button class="btn sm" style="margin-top:8px;font-size:12px;padding:7px 12px" onclick="applyDeload('${s.name.replace(/'/g,"")}',${s.deloadW})">✓ Deload ${s.name} to ${s.deloadW}lb</button>`:''}
+    </div>`).join('');
+    queue.push({html:`<h3>🧱 Hit a wall?</h3><p class="small" style="margin-bottom:8px">A lift has stalled. The fix isn't pushing harder — it's backing off to build momentum:</p>${rows}`, btn:'Got it'});
   }
 
-  // AUTO AI feedback — debounced to once per day (manual chat/breakdown still unlimited)
+  // recovery question (only when the session was genuinely tough) — feeds scheduling
+  if(finishedLog._askRecovery){
+    queue.push({recovery:true});
+  }
+  // if they trained off-schedule (started early / on a rest day), ask why so the coach learns
+  if(finishedLog._offSchedule){
+    queue.push({offsched:true, name:finishedLog.name||'workout'});
+  }
+
+  // always end with the debrief box (it stays until they submit or skip)
+  queue.push({debrief:true, name:finishedLog.name||'workout'});
+
+  runPostWorkoutQueue(queue, finishedLog);
+}
+// Show queued post-workout cards one at a time.
+let _pwQueue=[], _pwLog=null;
+function runPostWorkoutQueue(queue, log){ _pwQueue=queue; _pwLog=log; nextPostCard(); }
+function nextPostCard(){
+  if(!_pwQueue.length){ closeModal(); maybeAutoCoachFeedback(_pwLog); return; }
+  const card=_pwQueue.shift();
+  if(card.debrief){
+    modal(`<h3>How'd that go?</h3>
+      <p class="small" style="margin-bottom:12px">Tell your coach anything about today's ${card.name} — what felt strong, what was rough, any pain, or something you couldn't finish (like "skipped lateral raises, had a headache"). It remembers this for next time.</p>
+      <textarea class="inp" id="debrief" rows="3" placeholder="e.g. shoulders smoked by the end, left elbow sore on curls, couldn't finish lateral raises — headache"></textarea>
+      <button class="btn" style="margin-top:12px" onclick="saveDebrief('${(card.name||'').replace(/'/g,"")}')">Save & tell coach</button>
+      <button class="btn ghost" style="margin-top:10px" onclick="nextPostCard()">Skip</button>`);
+    return;
+  }
+  if(card.recovery){
+    modal(`<h3>One more thing 👀</h3>
+      <p class="small" style="margin-bottom:14px">That looked like a tough session. Honestly — did you have more in the tank, or are you cooked?</p>
+      <button class="btn" onclick="answerRecovery(true)">I could've done more</button>
+      <button class="btn ghost" style="margin-top:10px" onclick="answerRecovery(false)">I'm cooked — need recovery</button>`);
+    return;
+  }
+  if(card.offsched){
+    modal(`<h3>Trained early 👊</h3>
+      <p class="small" style="margin-bottom:12px">You moved your ${card.name} up. What's the reason? It helps your coach learn your rhythm (totally fine either way).</p>
+      <textarea class="inp" id="offwhy" rows="2" placeholder="e.g. felt good 30 min after my last one, or schedule changed"></textarea>
+      <button class="btn" style="margin-top:12px" onclick="saveOffSched('${(card.name||'').replace(/'/g,"")}')">Tell coach</button>
+      <button class="btn ghost" style="margin-top:10px" onclick="nextPostCard()">Skip</button>`);
+    return;
+  }
+  modal(`${card.html}<button class="btn ghost" style="margin-top:16px" onclick="nextPostCard()">${card.btn||'Next'}</button>`);
+}
+function saveOffSched(name){
+  const t=($('#offwhy')&&$('#offwhy').value||'').trim();
+  if(t)rememberNote(`Trained ${name} off-schedule — reason: ${t}`);
+  toast('Noted','good');
+  nextPostCard();
+}
+function answerRecovery(couldDoMore){
+  decideRecovery(_pwLog, couldDoMore);
+  if(couldDoMore){ rememberNote(`${_pwLog.name}: rated tough but said they had more in the tank — kept next session scheduled.`); toast('Respect. Kept your next workout on track 💪','good'); }
+  else { rememberNote(`${_pwLog.name}: wiped out, took a recovery day after.`); toast('Recovery day set — let your body rebuild 🛌','good'); }
+  nextPostCard();
+}
+async function maybeAutoCoachFeedback(log){
   if(S.settings.geminiKey&&navigator.onLine&&canAutoAI()){
     markAutoAI();
-    toast('Coach is reviewing…');
-    try{const fb=await geminiSessionFeedback(finishedLog);
-      if(fb){finishedLog.coachFeedback=fb;save();
-        modal(`<h3>⚡ Coach Feedback</h3><div class="coach" style="margin:0"><p>${fb}</p></div><button class="btn ghost" style="margin-top:16px" onclick="closeModal()">Got it</button>`);}
+    try{const fb=await geminiSessionFeedback(log);
+      if(fb){log.coachFeedback=fb;save();
+        modal(`<h3>⚡ Coach</h3><div class="coach" style="margin:0"><p>${fb.replace(/\[\[[^\]]*\]\]/g,'').trim()}</p></div><button class="btn ghost" style="margin-top:16px" onclick="closeModal()">Got it</button>`);}
     }catch(e){/* offline / no key — fine */}
   }
 }
-// After a workout, let the user tell the coach how it went in their own words.
-// It's saved to coach memory (works offline) and, with a key, the coach replies.
-function offerDebrief(log){
-  if(document.querySelector('#modalBg.show'))return; // don't stack on PR/overload modals
-  modal(`<h3>How'd that go?</h3>
-    <p class="small" style="margin-bottom:12px">Tell your coach anything about today's ${log.name||'workout'} — what felt strong, what was rough, any pain or PRs. It'll remember this for next time.</p>
-    <textarea class="inp" id="debrief" rows="3" placeholder="e.g. floor press felt easy, shoulders smoked by the end, left elbow a little sore on curls"></textarea>
-    <button class="btn" style="margin-top:12px" onclick="saveDebrief('${(log.name||'').replace(/'/g,"")}')">Save & tell coach</button>
-    <button class="btn ghost" style="margin-top:10px" onclick="closeModal()">Skip</button>`);
-}
+// legacy single-debrief entry (kept for safety if referenced elsewhere)
+function offerDebrief(log){ runPostWorkoutQueue([{debrief:true,name:log.name||'workout'}], log); }
 async function saveDebrief(name){
   const t=($('#debrief').value||'').trim();
-  if(!t){closeModal();return;}
+  if(!t){nextPostCard();return;}
   rememberNote(`${name||'Workout'} — ${t}`);
-  closeModal();
   if(S.settings.geminiKey&&navigator.onLine){
     toast('Saved — coach is reading it','good');
     try{
-      const reply=await geminiCall(`${coachContext()}\n\nThe client just finished "${name}" and told you: "${t}". Acknowledge like their coach in 1-2 sentences and say how it affects next session. No lists.`);
-      if(reply)modal(`<h3>💬 Coach</h3><div class="coach" style="margin:0"><p>${reply.replace(/\[\[[^\]]*\]\]/g,'').trim()}</p></div><button class="btn ghost" style="margin-top:16px" onclick="closeModal()">Got it</button>`);
-    }catch(e){/* note still saved */}
+      const reply=await geminiCall(`${coachContext()}\n\nThe client just finished "${name}" and told you: "${t}". Reply like their coach in 1-2 sentences — acknowledge it and say how it changes the next session. If they mention pain, an exercise they couldn't finish, or anything worth carrying forward, also save it with [[REMEMBER:...]]. No lists.`);
+      const clean=(reply||'').replace(/\[\[REMEMBER:([^\]]+)\]\]/g,(m,n)=>{rememberNote(n.trim());return '';}).replace(/\[\[[^\]]*\]\]/g,'').trim();
+      if(clean)modal(`<h3>💬 Coach</h3><div class="coach" style="margin:0"><p>${clean}</p></div><button class="btn ghost" style="margin-top:16px" onclick="nextPostCard()">Got it</button>`);
+      else nextPostCard();
+    }catch(e){nextPostCard();}
   } else {
     toast('Saved — your coach will remember this','good');
+    nextPostCard();
   }
 }
 /* ---- Gemini auto-call debounce: at most one automatic call per slot per day ---- */
@@ -2475,6 +2609,7 @@ function renderProgress(){
   let h=`<div class="page"><div class="topbar"><div><div class="sub">Your numbers</div><h1>Stats</h1></div></div>
     <div class="tabs">
       <button class="${progTab==='ranks'?'on':''}" onclick="setProgTab('ranks')">Strength Ranks</button>
+      <button class="${progTab==='history'?'on':''}" onclick="setProgTab('history')">History</button>
       <button class="${progTab==='calendar'?'on':''}" onclick="setProgTab('calendar')">Calendar</button>
       <button class="${progTab==='prs'?'on':''}" onclick="setProgTab('prs')">Records</button>
       <button class="${progTab==='graphs'?'on':''}" onclick="setProgTab('graphs')">Progress</button>
@@ -2482,13 +2617,29 @@ function renderProgress(){
   $('#s_progress').innerHTML=h;
   renderProgTab();
 }
-function setProgTab(t){progTab=t;renderProgTab();$$('#s_progress .tabs button').forEach(b=>b.classList.toggle('on',b.textContent.toLowerCase().includes(t==='ranks'?'rank':t==='prs'?'record':t)));}
+function setProgTab(t){progTab=t;renderProgTab();$$('#s_progress .tabs button').forEach(b=>b.classList.toggle('on',b.textContent.toLowerCase().includes(t==='ranks'?'rank':t==='prs'?'record':t==='graphs'?'progress':t)));}
 function renderProgTab(){
   const b=$('#progBody');
   if(progTab==='ranks')b.innerHTML=ranksView();
+  else if(progTab==='history')b.innerHTML=historyView();
   else if(progTab==='calendar')b.innerHTML=calendarView();
   else if(progTab==='prs')b.innerHTML=prsView();
   else b.innerHTML=graphsView();
+}
+// scrollable list of every past workout — tap one to view it and add comments
+function historyView(){
+  const logs=(S.logs||[]).slice().sort((a,b)=>b.date.localeCompare(a.date));
+  if(!logs.length)return `<div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 8v4l3 3M3 12a9 9 0 1 0 18 0 9 9 0 0 0-18 0z"/></svg><p>No workouts logged yet.<br>Finish one and it'll show up here.</p></div>`;
+  let h=`<div class="card"><div class="card-h"><div class="t">Workout History</div><span class="small">${logs.length} logged</span></div>`;
+  logs.forEach(l=>{
+    const d=new Date(l.date).toLocaleDateString('default',{weekday:'short',month:'short',day:'numeric'});
+    const sets=(l.exercises||[]).filter(e=>!e.warmup&&e.sets).reduce((n,e)=>n+e.sets.filter(s=>s.done).length,0);
+    h+=`<div onclick="dayDetail('${l.date}')" style="display:flex;justify-content:space-between;align-items:center;padding:13px 0;border-bottom:1px solid var(--line);cursor:pointer">
+      <div style="min-width:0"><div style="font-weight:700">${l.name}${l.notes?' <span style="color:var(--acc);font-size:12px">📝</span>':''}</div>
+        <div class="small">${d} · ${sets} sets · ${round(l.volume||0)}lb${l.difficulty&&l.difficulty.end?' · felt '+l.difficulty.end:''}</div></div>
+      <div style="color:var(--txt3);font-size:20px;margin-left:10px">›</div></div>`;
+  });
+  h+=`</div>`;return h;
 }
 function ranksView(){
   let h=`<div class="card"><div class="card-h"><div class="t">Muscle Map</div></div>${muscleMapSVG()}
@@ -2595,8 +2746,22 @@ function dayDetail(ds){
       <div class="small" style="margin-top:4px">${done.map(s=>`${s.weight}×${s.reps}`).join('  ·  ')}</div></div>`;});
   if(l.difficulty){h+=`<div class="small" style="margin-top:8px">Felt: ${l.difficulty.start||'?'} → ${l.difficulty.mid||'?'} → ${l.difficulty.end||'?'}</div>`;}
   if(l.coachFeedback)h+=`<div class="coach" style="margin-top:14px"><div class="cl">⚡ Coach</div><p>${l.coachFeedback}</p></div>`;
-  h+=`<button class="btn ghost" style="margin-top:16px" onclick="closeModal()">Close</button>`;
+  // notes / comments on this workout (editable any time)
+  h+=`<div style="margin-top:16px"><div style="font-size:12px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--txt2);margin-bottom:7px">Your notes</div>`;
+  if(l.notes)h+=`<div style="background:var(--bg3);border-radius:10px;padding:10px 12px;font-size:14px;line-height:1.5;margin-bottom:10px">${l.notes.replace(/</g,'&lt;')}</div>`;
+  h+=`<textarea class="inp" id="logNote" rows="2" placeholder="Add a comment — e.g. couldn't finish lateral raises, had a headache">${l.notes?'':''}</textarea>
+    <button class="btn ghost sm" style="width:100%;margin-top:8px" onclick="saveLogNote('${ds}')">${l.notes?'Update note':'Save note'}</button></div>`;
+  h+=`<button class="btn ghost" style="margin-top:14px" onclick="closeModal()">Close</button>`;
   modal(h);
+}
+// save/append a comment to a past workout — also remembered by the coach
+function saveLogNote(ds){
+  const l=S.logs.find(x=>x.date===ds);if(!l)return;
+  const t=($('#logNote')&&$('#logNote').value||'').trim();
+  if(!t){closeModal();return;}
+  l.notes=l.notes?`${l.notes}\n${t}`:t;
+  rememberNote(`${l.name} on ${ds} — ${t}`);
+  save();closeModal();toast('Note saved — coach will remember','good');
 }
 
 /* ---------- PRs / records ---------- */
@@ -2904,6 +3069,14 @@ function editProfile(){
       <div class="field" style="flex:1"><label>Height ft</label><input class="inp" id="ep_ft" type="number" inputmode="numeric" value="${p.heightFt||''}"></div>
       <div class="field" style="flex:1"><label>Height in</label><input class="inp" id="ep_in" type="number" inputmode="numeric" value="${p.heightIn||''}"></div>
     </div>
+    <div class="field"><label>Injuries / things to work around</label>
+      <input class="inp" id="ep_inj" value="${(p.injuries||'').replace(/"/g,'&quot;')}" placeholder="e.g. left shoulder clicks overhead"></div>
+    <div class="field"><label>Muscle imbalances</label>
+      <input class="inp" id="ep_imb" value="${(p.imbalances||'').replace(/"/g,'&quot;')}" placeholder="e.g. left arm weaker than right">
+      <p class="small" style="margin-top:8px">I'll keep both sides on the <b>same weight</b> (never lighter on the weak side) and have the weaker side set the reps so it catches up. I'll also lean toward dumbbell/single-arm moves so the strong side can't take over.</p>
+      <label style="display:flex;align-items:center;gap:10px;margin-top:10px;font-size:14px;font-weight:600;text-transform:none;letter-spacing:0;color:var(--txt)">
+        <input type="checkbox" id="ep_accel" ${p.imbalanceAccelerator?'checked':''} style="width:20px;height:20px;accent-color:var(--acc)">
+        Add one bonus set on my weaker side (optional accelerator)</label></div>
     <button class="btn" onclick="saveProfile()">Save profile</button>
     <button class="btn ghost" style="margin-top:10px" onclick="openSettings()">Back</button>`);
 }
@@ -2911,10 +3084,15 @@ function saveProfile(){
   const age=+$('#ep_age').value, wt=+$('#ep_wt').value, ft=+$('#ep_ft').value, inch=+$('#ep_in').value;
   if(!age||!wt||!ft){toast('Add age, weight and height','bad');return;}
   S.profile.age=age; S.profile.weight=wt; S.profile.heightFt=ft; S.profile.heightIn=inch||0;
+  S.profile.injuries=($('#ep_inj').value||'').trim();
+  const imb=($('#ep_imb').value||'').trim();
+  S.profile.imbalances=imb;
+  S.profile.imbalanceAccelerator=!!($('#ep_accel')&&$('#ep_accel').checked);
   const sexBtn=$('[data-epsex].on'); if(sexBtn)S.profile.sex=sexBtn.dataset.epsex;
+  // make the coach permanently aware of the imbalance
+  if(imb)rememberNote(`Muscle imbalance: ${imb}. Keep both sides same weight, weak side sets the reps${S.profile.imbalanceAccelerator?', plus one bonus set on the weak side':''}.`);
   // weight feeds calories, BMI and strength ranks — refresh the meal plan target
   S.nutrition.plan=buildLocalMeals();
-  // log this as the first bodyweight entry if none exists
   S.body=S.body||{weight:[]}; S.body.weight=S.body.weight||[];
   const today=todayStr();
   const ex=S.body.weight.find(e=>e.date===today);
