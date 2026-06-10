@@ -155,8 +155,12 @@ img{display:block;max-width:100%}
 .rank-next b{color:var(--txt)}
 
 /* muscle map */
-.mmap{display:flex;gap:8px;align-items:center;justify-content:center;padding:6px 0}
-.mmap svg{height:300px}
+.mmap{display:block;padding:6px 0}
+.mmap svg{height:auto;max-height:420px}
+.detail-block{margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+.detail-block:last-child{border-bottom:0}
+.detail-h{font-size:11px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--acc);margin-bottom:5px}
+.detail-block p{color:var(--txt);line-height:1.6;font-size:14px;margin:0}
 .musc{transition:fill .3s;cursor:pointer}
 .mlegend{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-top:10px}
 .mlegend span{font-size:11px;color:var(--txt2);font-weight:600;display:flex;align-items:center;gap:5px}

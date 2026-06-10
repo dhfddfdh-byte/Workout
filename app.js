@@ -25,6 +25,12 @@ function load(){
     s.settings=Object.assign({},DEFAULT_STATE.settings,s.settings||{});
     if(!Array.isArray(s.skips))s.skips=[];
     if(!s.coachSeen)s.coachSeen={};
+    // restore a Gemini key preserved through a reset
+    const pendingKey=localStorage.getItem('forge_pending_key');
+    if(pendingKey && !s.settings.geminiKey){
+      s.settings.geminiKey=pendingKey;
+      localStorage.removeItem('forge_pending_key');
+    }
     return s;
   }catch(e){return {...DEFAULT_STATE};}
 }
@@ -42,6 +48,13 @@ function vibrate(ms){if(navigator.vibrate)navigator.vibrate(ms);}
    STRENGTH SCIENCE  (bodyweight-ratio standards, ExRx-style)
    ============================================================ */
 const TIERS=['Untrained','Beginner','Novice','Intermediate','Advanced','Elite'];
+// Within each tier, split progress into 3 sub-levels (I, II, III) so you can
+// see finer-grained movement instead of staying "Novice" for months.
+function subTierLabel(tier, pct){
+  if(tier==='Untrained'||tier==='Elite')return tier;
+  const roman = pct<34 ? 'I' : pct<67 ? 'II' : 'III';
+  return tier+' '+roman;
+}
 // 1RM as multiple of bodyweight, for adult MALE at peak age. [Untr,Beg,Nov,Int,Adv,Elite]
 const STD={
   'Bench Press':   [0.50,0.75,1.00,1.25,1.75,2.10],
@@ -88,7 +101,7 @@ function rankLift(lift, oneRM){
     pct=Math.min(100,Math.max(0,round(((oneRM-lo)/(hi-lo))*100)));
     nextW=hi; nextTier=TIERS[idx+1];
   }
-  return {tier:TIERS[idx], idx, pct, nextW, nextTier, oneRM, thresholds};
+  return {tier:TIERS[idx], subTier:subTierLabel(TIERS[idx], pct), idx, pct, nextW, nextTier, oneRM, thresholds};
 }
 // overall strength score 0-100 across assessed lifts
 function overallRank(){
@@ -577,6 +590,116 @@ function onbNextFn(){
    EXERCISE LIBRARY  (filtered by equipment)
    movement cues used for the animated form illustration
    ============================================================ */
+// Detailed form guides for the most-used exercises. Keyed by name (matches EXLIB.n).
+// Returned by exerciseDetail() if present; falls back to the short EXLIB description.
+const EX_DETAIL = {
+  'Barbell Bench Press': {
+    setup: "Lie flat with eyes under the bar. Plant feet flat on the floor. Pinch your shoulder blades together and pull them down toward your back pockets - keep this position the entire set. Grip the bar slightly wider than shoulder width.",
+    execution: "1. Unrack with straight arms; hold the bar stacked over your shoulders. 2. Lower it under control to the middle of your chest - light contact, no bouncing. 3. Press the bar up and slightly back so it ends over your shoulders. 4. Lock out without losing the shoulder-blade squeeze.",
+    cues: "Drive your feet into the floor. Keep your butt on the bench. Elbows ~70 degrees from torso, not flared wide.",
+    mistakes: "Flaring elbows wide (shoulder pain). Bouncing off chest. Lifting hips off the bench. Letting shoulders roll forward.",
+    breathing: "Big breath at the top, hold it on the way down, exhale forcefully as you press up."
+  },
+  'Dumbbell Floor Press': {
+    setup: "Lie flat on your back, knees bent, feet on the floor. Hold a dumbbell in each hand at chest level, palms facing your feet. Pinch your shoulder blades together.",
+    execution: "1. Press both DBs straight up over your shoulders until arms are nearly locked. 2. Lower under control until your upper arms touch the floor (not the DBs). 3. Pause briefly with elbows on the floor. 4. Press up again.",
+    cues: "Elbows ~45 degrees from your torso, not flared wide. The floor protects your shoulders - don't skip the pause.",
+    mistakes: "Slamming elbows into the floor. Flaring elbows wide. Letting DBs drift over your face instead of your shoulders.",
+    breathing: "Inhale on the way down, exhale on the press up."
+  },
+  'Push-up': {
+    setup: "Hands flat under your shoulders, fingers spread. Body in one straight line from heels to head - squeeze your glutes, brace your abs.",
+    execution: "1. Lower your chest toward the floor in one rigid plank. 2. Stop when your chest is an inch off the floor - elbows ~45 degrees from your torso, NOT flared to 90. 3. Press back up, same plank shape. 4. Lock out at the top without rounding the upper back.",
+    cues: "Body is a board, not a worm. Push the floor away. Squeeze armpits like you're holding a tennis ball under each.",
+    mistakes: "Hips sagging (weak core). Hips piking up. Elbows flaring 90 degrees. Half reps.",
+    breathing: "Inhale down, exhale up."
+  },
+  'Dumbbell Bicep Curl': {
+    setup: "Stand tall, DB in each hand, arms straight at sides, palms facing forward. Elbows tucked into your ribs.",
+    execution: "1. Curl one DB (or both) up by bending at the elbow - upper arm stays glued to your ribs. 2. Squeeze the bicep hard at the top, DB near your shoulder. 3. Lower under control over 2-3 seconds. 4. Fully straighten the arm at the bottom.",
+    cues: "Only the forearm moves. If your elbow drifts forward or your shoulder rolls, the weight's too heavy. The slow lowering is where most of the growth happens.",
+    mistakes: "Swinging the body. Elbow drifting forward. Half-reps at the bottom. Dropping the DB on the way down.",
+    breathing: "Exhale on the curl, inhale on the way down."
+  },
+  'Bicep Curl': {
+    setup: "Stand tall, DB in each hand, arms straight at sides, palms facing forward. Elbows tucked into your ribs.",
+    execution: "1. Curl the DB up by bending at the elbow - upper arm stays glued to your ribs. 2. Squeeze the bicep hard at the top. 3. Lower under control over 2-3 seconds. 4. Fully straighten the arm at the bottom.",
+    cues: "Only the forearm moves. Slow lower for max growth.",
+    mistakes: "Swinging. Elbow drift. Half-reps.",
+    breathing: "Exhale on the curl, inhale on the way down."
+  },
+  'Hammer Curl': {
+    setup: "Same as a regular DB curl but hold the DBs with palms facing each other (neutral grip) - like holding two hammers.",
+    execution: "1. Curl the DBs up keeping that neutral palm position the whole time. 2. Squeeze at the top. 3. Lower slowly.",
+    cues: "Hits the brachialis (under the bicep) and forearm more than a regular curl. Keep elbows pinned to your sides.",
+    mistakes: "Rotating palms during the rep. Swinging. Going too heavy.",
+    breathing: "Exhale up, inhale down."
+  },
+  'Back Squat': {
+    setup: "Bar across your upper traps (NOT your neck). Step under it, brace your back tight, unrack by pushing up with your legs. Take 2-3 steps back. Feet shoulder-width, toes slightly out.",
+    execution: "1. Push your hips back and bend knees at the same time. 2. Lower until hips are at or below knee level - full depth. 3. Knees track over your toes, not caving in. 4. Drive through your whole foot to stand back up.",
+    cues: "Knees out, chest up, brace HARD. The bar travels straight up and down.",
+    mistakes: "Knees caving inward. Heels lifting. Half-reps. Rounding the lower back.",
+    breathing: "Big breath at the top, hold it through the rep, exhale at the top."
+  },
+  'Goblet Squat': {
+    setup: "Hold one DB or kettlebell vertically at chest height, hands cupped under the top end. Feet shoulder-width, toes slightly out.",
+    execution: "1. Brace your core. 2. Push hips back and squat straight down between your feet. 3. Let your elbows lightly graze the inside of your knees at the bottom. 4. Drive up through your whole foot.",
+    cues: "Sit between your legs, not back. Chest up the whole time. Knees out.",
+    mistakes: "Letting the weight pull you forward. Knees caving. Not going deep enough.",
+    breathing: "Inhale on the way down, exhale on the way up."
+  },
+  'Deadlift': {
+    setup: "Bar over the middle of your feet, ~1 inch from your shins. Feet hip-width. Bend down and grip the bar just outside your knees. Drop hips until shins touch the bar. Chest up, back flat, lats squeezed.",
+    execution: "1. Take the slack out of the bar - pull up on it slightly without lifting. 2. Push the floor away with your legs while keeping your back flat. 3. As the bar passes your knees, drive hips forward to stand up. 4. Lock out - chest up, glutes squeezed. 5. Reverse: hips back first, then bend knees once bar passes them.",
+    cues: "Push the floor, don't yank the bar. Keep the bar against your legs the whole way up. Brace HARD.",
+    mistakes: "Rounding the lower back (injury risk). Jerking the bar off the floor. Bar drifting away from shins. Hyperextending at the top.",
+    breathing: "Big breath at the bottom, hold it through the rep, exhale at the top."
+  },
+  'Romanian Deadlift': {
+    setup: "Stand holding a barbell or DBs in front of your thighs. Feet hip-width. Slight bend in the knees - keep that bend the whole set.",
+    execution: "1. Push hips straight back like you're closing a door with your butt. 2. Let the weight slide down your thighs toward your knees. 3. Stop when you feel a strong stretch in your hamstrings. 4. Drive hips forward to stand back up.",
+    cues: "It's a HIP hinge, not a squat. Knee bend stays the same. Bar/DBs stay close to your legs.",
+    mistakes: "Squatting it down. Rounding the back. Going past hamstring stretch into lower-back stretch.",
+    breathing: "Inhale on the way down, exhale on the way up."
+  },
+  'Overhead Press': {
+    setup: "Bar at shoulder height, hands just outside shoulder width. Feet hip-width, glutes and core squeezed. Bar resting on your front delts, elbows under the bar.",
+    execution: "1. Big breath and brace. 2. Press the bar straight up - pull your head back slightly to let it pass. 3. Once it clears your forehead, push your head through so it finishes directly over your shoulders. 4. Lock out, bar stacked over the middle of your foot. 5. Lower along the same path.",
+    cues: "Squeeze your butt and abs HARD - this stops you arching your lower back. Bar goes straight up, not forward.",
+    mistakes: "Pressing in front of you instead of overhead. Hyperextending the lower back. Soft brace.",
+    breathing: "Big breath before the press, hold it on the way up, exhale at lockout."
+  },
+  'Lateral Raise': {
+    setup: "Stand with a DB in each hand at your sides, palms facing your thighs. Slight bend in the elbows - keep that bend the entire set.",
+    execution: "1. Raise the DBs out to your sides in an arc until your arms are parallel to the floor (shoulder height). 2. Lead with your elbows, like pouring out two pitchers. 3. Pause briefly at the top. 4. Lower under control over 2-3 seconds.",
+    cues: "Light weight, slow tempo. If you have to swing, drop the weight.",
+    mistakes: "Going too heavy and swinging (uses traps not delts). Raising the DBs in front. Locking the elbows straight.",
+    breathing: "Exhale on the way up, inhale on the way down."
+  },
+  'Bent-Over Row': {
+    setup: "Feet hip-width, holding a barbell or DBs. Push hips back so torso bends to ~45 degrees. Back flat, core braced. Weight hangs at arm's length.",
+    execution: "1. Pull the weight toward your lower chest / upper stomach by driving your elbows back. 2. Squeeze your shoulder blades together at the top. 3. Lower under control until arms are fully extended.",
+    cues: "Drive elbows back, don't curl with the arms. Keep the same torso angle the whole set.",
+    mistakes: "Standing up taller as you pull. Pulling to the chest instead of lower torso. Round back.",
+    breathing: "Exhale on the pull, inhale on the way down."
+  },
+  'Plank': {
+    setup: "Forearms on the floor, elbows under your shoulders. Feet hip-width. Body in one straight line - squeeze glutes, brace abs, tuck tailbone slightly.",
+    execution: "1. Hold the position. 2. Breathe normally. 3. Stay tight from neck to heels - like one rigid board.",
+    cues: "Squeeze EVERYTHING. If form breaks, end the set - quality beats time.",
+    mistakes: "Hips sagging. Butt in the air. Holding breath. Going past form breakdown.",
+    breathing: "Breathe normally - short, controlled breaths."
+  },
+  'Tricep Extension': {
+    setup: "Stand or sit, hold one DB with both hands by one end, raise it overhead so it sits behind your head. Elbows pointed up close to your ears.",
+    execution: "1. Lower the DB behind your head by bending at the elbows - upper arms stay glued in place. 2. Stop when you feel a strong stretch in the triceps. 3. Press back up by straightening the elbows. 4. Squeeze the triceps at the top.",
+    cues: "Only the forearms move. Elbows stay close to your ears, not flared out.",
+    mistakes: "Flaring elbows out wide. Letting the upper arms drift forward. Half reps.",
+    breathing: "Inhale on the way down, exhale on the press up."
+  }
+};
+function exerciseDetail(name){ return EX_DETAIL[name] || null; }
 const EXLIB={
   chest:[
     {n:'Barbell Bench Press',eq:['barbell'],req:['bench','flatbench','rack'],c:'Lower bar to mid-chest, drive up. Keep shoulder blades pinned.'},
@@ -1111,13 +1234,43 @@ async function buildProgram(){
    ============================================================ */
 const GEMINI_MODEL='gemini-2.5-flash';
 const GEMINI_URL='https://generativelanguage.googleapis.com/v1beta/models/'+GEMINI_MODEL+':generateContent?key=';
-const COACH_PERSONA=`You are this person's real strength coach, texting them. Talk like an actual human texting — warm, direct, a bit casual, varied. Never sound scripted: don't open every message the same way ("Alright,", "Got it,", "No worries"), don't repeat stock phrases, and match their energy. NEVER say you're an AI, never give disclaimers, never use bullet points or headers — just talk like a person who knows them.
+// Five selectable coach personalities. The user picks one in Settings; each
+// has its own voice but all share the core rules (push back, decisive changes,
+// remember things, never act like an AI).
+const COACH_BASE = `Core rules for any voice:
+- You are NOT a yes-man. Push back when they're wrong, ego-lifting, claiming inflated numbers, skipping workouts without reason, or asking for the wrong thing for their goal. Tell the truth even if it's not what they want to hear.
+- Use what you remember about them — injuries, imbalances, recent sessions, skipped days, what they've told you. React like a coach who knows them.
+- BE DECISIVE WITH CHANGES. If they tell you they don't have equipment, something hurts, or they want a different exercise, make the change RIGHT THERE in the same reply using directives below. Don't say "we'll change it" and wait. Pick a specific replacement and attach the directive so they just tap to apply.
+- Work ONLY from real numbers they've given you. Never invent stats. If their numbers don't add up (e.g. needing a spotter to unrack but a rep felt "light"), call it out.
+- NEVER say you're an AI, never give disclaimers, never use bullet points or headers in chat. Plain conversational text only.
+- Keep replies short (2-4 sentences) unless they ask for detail. Don't lecture.`;
 
-Keep replies short (2-4 sentences) unless they ask for detail. You know your stuff — progressive overload, recovery, rep ranges, form, fixing imbalances — but explain it simply. Be honest and decisive: if they should drop weight, deload, swap an exercise, rest, or fix form, say it straight.
+const COACH_PERSONAS = {
+  'no-bs': `You are a no-BS strength coach. Direct, blunt, honest first — gentle second. You call out ego-lifting, bad form claims, inflated numbers, and people chasing the wrong thing for their goal. You don't soften the truth. Get to the point, explain WHY they're wrong in one tight reason, then tell them exactly what to do instead. Two short paragraphs max. No fluff, no hype, no "great question" garbage.
 
-BE DECISIVE WITH CHANGES. If they tell you they don't have a piece of equipment, something hurts, or they want a different exercise, make the change RIGHT THERE in the same reply using the directives — don't say "we'll change it" and wait. Pick the specific replacement yourself and attach the directive so they just tap to apply. One reply, decision made.
+` + COACH_BASE,
 
-Use what you remember about them (injuries, imbalances, how recent sessions felt, skipped days, what they've told you) so it feels like you actually know them. Work only from real numbers they've given you — never invent stats.`;
+  'friend': `You are their actual friend who lifts and knows training — texting them. Talk like a regular friend texting, casually, naturally. Use natural conversational rhythm; some AAVE/casual phrasing is fine when it fits ("damn", "you was", "ain't", contractions, lowercase), but DON'T overdo it or it sounds corny and fake. No "fasho fasho ayy" caricature. Just talk normal like a friend.
+
+You give a damn about them, react like a friend would (not a coach giving a speech), ask follow-ups, can be a little dumb or funny when it fits. When they ask for advice you give real advice — just delivered like a friend would deliver it ("nah bro that weight's too heavy, you gon' pop a shoulder"), not a script. If they're being dumb you tell them.
+
+` + COACH_BASE,
+
+  'hype': `You are a high-energy hype coach. You gas them up — celebrate the wins HARD, get them fired up before sets, make every PR feel like a big deal. Lots of energy, exclamation points are fine. BUT — you still tell the truth. If they're ego-lifting or chasing the wrong thing, you call it out, you just do it with energy ("nah bro that ain't it, listen — drop that weight and HIT THE REP RANGE, that's where the gains live, LET'S GO"). Energy without honesty is just noise.
+
+` + COACH_BASE,
+
+  'calm': `You are a calm, technical coach. Even-tempered, thoughtful, focused on the why. Explain the reasoning behind what you tell them — bodyweight ratios, rep ranges, recovery, progressive overload — but in plain language a normal person uses, not textbook jargon. You're patient but firm: when they're wrong you correct them gently and explain why. No hype, no slang. Quiet confidence.
+
+` + COACH_BASE,
+
+  'oldschool': `You are an old-school gym mentor. Gruff, no-nonsense, classic. Less hype, more "do the work." You don't tolerate excuses, ego-lifting, or chasing fads. You believe in basics done well: progressive overload, eating right, showing up. When they whine about something not working, you ask if they actually did the work. Short sentences. A little crusty but fundamentally caring. No modern slang.
+
+` + COACH_BASE
+};
+function currentPersona(){
+  return COACH_PERSONAS[S.settings.coachPersonality||'no-bs'] || COACH_PERSONAS['no-bs'];
+}
 async function geminiCall(prompt, media){
   if(!S.settings.geminiKey) throw new Error('no key');
   const parts=[{text:prompt}];
@@ -1130,7 +1283,7 @@ async function geminiCall(prompt, media){
     parts.push({inline_data:{mime_type:mime,data:clean}});
   }
   const cfg={temperature:0.85,topP:0.95,maxOutputTokens:2048};
-  const payload=(extra)=>JSON.stringify({systemInstruction:{parts:[{text:COACH_PERSONA}]},contents:[{parts}],generationConfig:Object.assign({},cfg,extra)});
+  const payload=(extra)=>JSON.stringify({systemInstruction:{parts:[{text:currentPersona()}]},contents:[{parts}],generationConfig:Object.assign({},cfg,extra)});
   let r;
   try{
     r=await fetch(GEMINI_URL+S.settings.geminiKey,{method:'POST',headers:{'Content-Type':'application/json'},
@@ -1287,12 +1440,28 @@ function applyAdaptiveRest(log){
   const score=fatigueScore(log);
   const d=log.difficulty||{};
   const anyMax=d.start==='max'||d.mid==='max'||d.end==='max';
+  // Don't even ASK about recovery if they're behind on training — they need to
+  // train, not rest more. Skipped 3+ recent days = no recovery question.
+  const recentSkips=(detectSkips()||[]).length;
+  if(recentSkips>=3)return;
+  // Don't pile recovery on top of recovery. If yesterday or today was already
+  // recovery, skip.
+  if(recentRecoveryDay())return;
   // Only ASK about recovery when it was clearly hard: total score >=5 (e.g.
   // hard/destroyed/destroyed = 2+3+3=8) or any "destroyed me" rating present.
-  // Otherwise: no rest day, next scheduled workout stands.
   if(score>=5 || anyMax){
-    log._askRecovery=true;   // the post-workout queue will ask "could you do more?"
+    log._askRecovery=true;
   }
+}
+// Was there a recovery day in the last 2 days (so a new one would stack)?
+function recentRecoveryDay(){
+  if(!S.program||!S.program.overrides)return false;
+  for(let i=0;i<=2;i++){
+    const dt=new Date();dt.setDate(dt.getDate()-i);
+    const ds=dt.toISOString().slice(0,10);
+    if(S.program.overrides[ds]==='recovery')return true;
+  }
+  return false;
 }
 // Called from the recovery question. If they say they had more in the tank, we
 // trust them and keep training scheduled. If they're cooked, we set a recovery day.
@@ -1300,12 +1469,19 @@ function decideRecovery(log, couldDoMore){
   if(!S.program)return;
   S.program.overrides=S.program.overrides||{};
   if(couldDoMore)return; // keep next workout as scheduled
-  // they're wiped — set the next TRAINING day to recovery
+  // they're wiped — set the next TRAINING day to recovery, BUT never two recovery
+  // days in a row, and never if they've missed multiple recent workouts.
+  if((detectSkips()||[]).length>=3)return;
   for(let i=1;i<=3;i++){
     const dt=new Date();dt.setDate(dt.getDate()+i);
     const ts=dt.toISOString().slice(0,10);
     const dow=(dt.getDay()+6)%7;
     if(S.program.schedule[dow] && S.program.schedule[dow].type==='train' && !S.program.overrides[ts]){
+      // refuse to put recovery right next to another recovery
+      const prev=new Date(dt);prev.setDate(prev.getDate()-1);
+      const next=new Date(dt);next.setDate(next.getDate()+1);
+      const prevDS=prev.toISOString().slice(0,10), nextDS=next.toISOString().slice(0,10);
+      if(S.program.overrides[prevDS]==='recovery'||S.program.overrides[nextDS]==='recovery')continue;
       S.program.overrides[ts]='recovery';
       break;
     }
@@ -1888,66 +2064,174 @@ function muscColor(v){ // v 0..5
   if(v<4)return 'var(--green)';
   return 'var(--acc)';
 }
+// State for which side of the body the muscle map is showing (front / back).
+let muscleMapSide='front';
+function flipMuscleMap(){
+  muscleMapSide = muscleMapSide==='front' ? 'back' : 'front';
+  // re-render the ranks tab if it's the one showing
+  const b=$('#progBody'); if(b && progTab==='ranks') b.innerHTML=ranksView();
+}
 function muscleMapSVG(){
   const ms=muscleStrength();
   const c=m=>muscColor(ms[m]||0);
   const tap=m=>`onclick="muscleInfo('${m}')" style="cursor:pointer"`;
-  const body='#20242b';      // body silhouette fill
-  const edge='#2c323b';      // silhouette outline
-  // Anatomically-proportioned front view. Head ≈ 1/7.5 of height (realistic),
-  // shoulders ~2x head-width, V-taper to waist, then legs ~half the height.
-  return `<div class="mmap"><svg viewBox="0 0 200 380" xmlns="http://www.w3.org/2000/svg">
-    <!-- ===== body silhouette (single connected outline) ===== -->
-    <g fill="${body}" stroke="${edge}" stroke-width="1.5">
-      <!-- head -->
-      <ellipse cx="100" cy="30" rx="17" ry="20"/>
-      <!-- neck -->
-      <path d="M91 47 h18 v11 h-18 Z"/>
-      <!-- torso + arms + legs as one mass -->
-      <path d="M70 60
-        Q100 52 130 60
-        L150 72 Q160 80 162 96 L156 150 Q152 156 148 150 L142 100
-        L138 92 L138 150
-        Q140 200 134 215 L120 215 Q116 180 116 150
-        L116 150 Q116 215 112 250 L112 320 Q112 350 108 372 L94 372
-        Q92 340 92 320 L92 250 Q88 215 88 150
-        L88 150 Q84 180 80 215 L66 215 Q60 200 62 150
-        L62 92 L58 100 L44 150 Q40 156 38 150 L44 96 Q46 80 50 72 Z"/>
-    </g>
-    <!-- ===== muscle groups (positioned on the silhouette) ===== -->
-    <!-- traps -->
-    <path d="M78 60 Q100 54 122 60 Q114 70 100 68 Q86 70 78 60 Z" fill="${c('traps')}" ${tap('traps')}/>
-    <!-- delts -->
-    <ellipse cx="62" cy="80" rx="16" ry="15" fill="${c('frontDelt')}" ${tap('frontDelt')}/>
-    <ellipse cx="138" cy="80" rx="16" ry="15" fill="${c('frontDelt')}" ${tap('frontDelt')}/>
-    <!-- chest (two pecs) -->
-    <path d="M82 70 Q100 66 100 69 L100 104 Q86 110 74 100 Q72 82 82 70 Z" fill="${c('chest')}" ${tap('chest')}/>
-    <path d="M118 70 Q100 66 100 69 L100 104 Q114 110 126 100 Q128 82 118 70 Z" fill="${c('chest')}" ${tap('chest')}/>
+  const skin='#262b34';
+  const edge='#363c47';
+  // Properly proportioned figure: head ≈ 1/8 of body height, shoulders ~2.5x head width,
+  // V-taper from shoulders to a narrower waist, then hips slightly wider than waist,
+  // long legs (~half body). viewBox 0 0 200 480.
+  // Each body part drawn separately so the silhouette has real contour, not one boxy mass.
+  const silhouette = `
+    <!-- head -->
+    <ellipse cx="100" cy="34" rx="20" ry="26" fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
+    <!-- neck -->
+    <path d="M92 58 Q100 62 108 58 L110 74 Q100 78 90 74 Z" fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
+    <!-- torso: shoulders → V-taper → narrow waist → hip flare -->
+    <path d="M68 80
+             Q100 73 132 80
+             L150 96 Q156 116 152 142
+             L138 218 Q132 240 124 254
+             L100 258 L76 254
+             Q68 240 62 218 L48 142
+             Q44 116 50 96 Z"
+          fill="${skin}" stroke="${edge}" stroke-width="1.3"/>
+    <!-- LEFT UPPER ARM (with bicep bulge) -->
+    <path d="M50 96
+             Q38 104 32 128
+             Q26 152 28 184
+             L42 186
+             Q46 152 50 132
+             L56 102 Z"
+          fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
+    <!-- RIGHT UPPER ARM -->
+    <path d="M150 96
+             Q162 104 168 128
+             Q174 152 172 184
+             L158 186
+             Q154 152 150 132
+             L144 102 Z"
+          fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
+    <!-- LEFT FOREARM + hand -->
+    <path d="M28 184
+             Q24 210 26 248
+             Q28 268 32 280
+             L40 278 Q44 268 42 248
+             Q42 210 42 186 Z"
+          fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
+    <!-- RIGHT FOREARM + hand -->
+    <path d="M172 184
+             Q176 210 174 248
+             Q172 268 168 280
+             L160 278 Q156 268 158 248
+             Q158 210 158 186 Z"
+          fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
+    <!-- pelvis/hips -->
+    <path d="M62 246 Q100 256 138 246
+             L142 280 Q120 290 100 290 Q80 290 58 280 Z"
+          fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
+    <!-- LEFT THIGH -->
+    <path d="M70 280
+             Q60 320 64 372
+             L90 374
+             Q92 320 96 280 Z"
+          fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
+    <!-- RIGHT THIGH -->
+    <path d="M130 280
+             Q140 320 136 372
+             L110 374
+             Q108 320 104 280 Z"
+          fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
+    <!-- LEFT SHIN -->
+    <path d="M64 372
+             Q60 412 66 458
+             L86 460
+             Q90 412 90 374 Z"
+          fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
+    <!-- RIGHT SHIN -->
+    <path d="M136 372
+             Q140 412 134 458
+             L114 460
+             Q110 412 110 374 Z"
+          fill="${skin}" stroke="${edge}" stroke-width="1.2"/>`;
+
+  // FRONT muscle overlays
+  const musclesFront = `
+    <!-- traps (visible at shoulder line) -->
+    <path d="M86 76 Q100 72 114 76 Q108 86 100 86 Q92 86 86 76 Z" fill="${c('traps')}" ${tap('traps')}/>
+    <!-- front delts -->
+    <path d="M54 94 Q44 104 50 124 Q68 122 76 100 Q64 88 54 94 Z" fill="${c('frontDelt')}" ${tap('frontDelt')}/>
+    <path d="M146 94 Q156 104 150 124 Q132 122 124 100 Q136 88 146 94 Z" fill="${c('frontDelt')}" ${tap('frontDelt')}/>
+    <!-- pectorals (left + right) -->
+    <path d="M76 96 Q98 92 100 100 L100 140 Q84 144 72 134 Q66 116 76 96 Z" fill="${c('chest')}" ${tap('chest')}/>
+    <path d="M124 96 Q102 92 100 100 L100 140 Q116 144 128 134 Q134 116 124 96 Z" fill="${c('chest')}" ${tap('chest')}/>
     <!-- biceps -->
-    <path d="M48 96 Q42 116 47 138 L60 135 Q62 112 59 98 Q53 93 48 96 Z" fill="${c('biceps')}" ${tap('biceps')}/>
-    <path d="M152 96 Q158 116 153 138 L140 135 Q138 112 141 98 Q147 93 152 96 Z" fill="${c('biceps')}" ${tap('biceps')}/>
+    <path d="M32 130 Q26 152 30 182 L42 180 Q46 152 44 128 Q38 124 32 130 Z" fill="${c('biceps')}" ${tap('biceps')}/>
+    <path d="M168 130 Q174 152 170 182 L158 180 Q154 152 156 128 Q162 124 168 130 Z" fill="${c('biceps')}" ${tap('biceps')}/>
     <!-- forearms -->
-    <path d="M47 142 Q43 162 48 186 L57 184 Q60 160 57 142 Z" fill="${c('forearms')}" ${tap('forearms')}/>
-    <path d="M153 142 Q157 162 152 186 L143 184 Q140 160 143 142 Z" fill="${c('forearms')}" ${tap('forearms')}/>
-    <!-- abs (6-pack) -->
+    <path d="M28 190 Q26 220 30 256 L40 254 Q42 220 40 190 Z" fill="${c('forearms')}" ${tap('forearms')}/>
+    <path d="M172 190 Q174 220 170 256 L160 254 Q158 220 160 190 Z" fill="${c('forearms')}" ${tap('forearms')}/>
+    <!-- abs (six-pack) -->
     <g ${tap('abs')}>
-      <rect x="86" y="110" width="13" height="12" rx="2.5" fill="${c('abs')}"/>
-      <rect x="101" y="110" width="13" height="12" rx="2.5" fill="${c('abs')}"/>
-      <rect x="86" y="124" width="13" height="12" rx="2.5" fill="${c('abs')}"/>
-      <rect x="101" y="124" width="13" height="12" rx="2.5" fill="${c('abs')}"/>
-      <rect x="86" y="138" width="13" height="13" rx="2.5" fill="${c('abs')}"/>
-      <rect x="101" y="138" width="13" height="13" rx="2.5" fill="${c('abs')}"/>
+      <rect x="86" y="144" width="13" height="13" rx="2.5" fill="${c('abs')}"/>
+      <rect x="101" y="144" width="13" height="13" rx="2.5" fill="${c('abs')}"/>
+      <rect x="86" y="159" width="13" height="13" rx="2.5" fill="${c('abs')}"/>
+      <rect x="101" y="159" width="13" height="13" rx="2.5" fill="${c('abs')}"/>
+      <rect x="86" y="174" width="13" height="14" rx="2.5" fill="${c('abs')}"/>
+      <rect x="101" y="174" width="13" height="14" rx="2.5" fill="${c('abs')}"/>
     </g>
     <!-- obliques -->
-    <path d="M80 112 Q76 136 82 154 L85 152 Q81 130 83 112 Z" fill="${c('abs')}" opacity="0.55" ${tap('abs')}/>
-    <path d="M120 112 Q124 136 118 154 L115 152 Q119 130 117 112 Z" fill="${c('abs')}" opacity="0.55" ${tap('abs')}/>
-    <!-- quads -->
-    <path d="M80 170 Q74 215 82 262 L96 258 Q98 210 96 170 Q88 165 80 170 Z" fill="${c('quads')}" ${tap('quads')}/>
-    <path d="M120 170 Q126 215 118 262 L104 258 Q102 210 104 170 Q112 165 120 170 Z" fill="${c('quads')}" ${tap('quads')}/>
-    <!-- calves -->
-    <path d="M84 266 Q79 304 86 342 L97 339 Q98 302 95 266 Z" fill="${c('calves')}" ${tap('calves')}/>
-    <path d="M116 266 Q121 304 114 342 L103 339 Q102 302 105 266 Z" fill="${c('calves')}" ${tap('calves')}/>
-  </svg></div>`;
+    <path d="M76 144 Q70 178 76 218 L82 216 Q78 178 80 144 Z" fill="${c('abs')}" opacity="0.55" ${tap('abs')}/>
+    <path d="M124 144 Q130 178 124 218 L118 216 Q122 178 120 144 Z" fill="${c('abs')}" opacity="0.55" ${tap('abs')}/>
+    <!-- quads (left + right thigh) -->
+    <path d="M72 290 Q64 326 68 368 L88 366 Q92 326 94 290 Q84 286 72 290 Z" fill="${c('quads')}" ${tap('quads')}/>
+    <path d="M128 290 Q136 326 132 368 L112 366 Q108 326 106 290 Q116 286 128 290 Z" fill="${c('quads')}" ${tap('quads')}/>
+    <!-- shin (tibialis — front of lower leg) -->
+    <path d="M68 378 Q64 416 70 454 L84 452 Q88 416 86 378 Z" fill="${c('calves')}" opacity="0.5" ${tap('calves')}/>
+    <path d="M132 378 Q136 416 130 454 L116 452 Q112 416 114 378 Z" fill="${c('calves')}" opacity="0.5" ${tap('calves')}/>`;
+
+  // BACK muscle overlays
+  const musclesBack = `
+    <!-- upper traps (prominent on back) -->
+    <path d="M84 70 Q100 66 116 70 Q108 102 100 104 Q92 102 84 70 Z" fill="${c('traps')}" ${tap('traps')}/>
+    <!-- rear delts -->
+    <path d="M52 94 Q42 106 48 126 Q66 124 74 102 Q62 88 52 94 Z" fill="${c('rearDelt')}" ${tap('rearDelt')}/>
+    <path d="M148 94 Q158 106 152 126 Q134 124 126 102 Q138 88 148 94 Z" fill="${c('rearDelt')}" ${tap('rearDelt')}/>
+    <!-- lats — V-shape from armpit to lower back -->
+    <path d="M68 108 Q56 152 76 200 L100 200 L100 110 Q84 102 68 108 Z" fill="${c('lats')}" ${tap('lats')}/>
+    <path d="M132 108 Q144 152 124 200 L100 200 L100 110 Q116 102 132 108 Z" fill="${c('lats')}" ${tap('lats')}/>
+    <!-- middle back (between lats) -->
+    <path d="M88 98 Q100 94 112 98 L110 170 Q100 174 90 170 Z" fill="${c('back')}" ${tap('back')}/>
+    <!-- triceps (back of upper arm) -->
+    <path d="M30 130 Q24 154 28 184 L42 182 Q46 154 46 126 Q38 122 30 130 Z" fill="${c('triceps')}" ${tap('triceps')}/>
+    <path d="M170 130 Q176 154 172 184 L158 182 Q154 154 154 126 Q162 122 170 130 Z" fill="${c('triceps')}" ${tap('triceps')}/>
+    <!-- forearms (back) -->
+    <path d="M28 190 Q26 220 30 256 L40 254 Q42 220 40 190 Z" fill="${c('forearms')}" ${tap('forearms')}/>
+    <path d="M172 190 Q174 220 170 256 L160 254 Q158 220 160 190 Z" fill="${c('forearms')}" ${tap('forearms')}/>
+    <!-- glutes (two cheeks) -->
+    <path d="M66 258 Q58 282 70 296 Q86 298 98 292 L98 260 Q82 260 66 258 Z" fill="${c('glutes')}" ${tap('glutes')}/>
+    <path d="M134 258 Q142 282 130 296 Q114 298 102 292 L102 260 Q118 260 134 258 Z" fill="${c('glutes')}" ${tap('glutes')}/>
+    <!-- hamstrings (back of thigh) -->
+    <path d="M72 298 Q64 332 68 368 L88 366 Q92 332 94 298 Q84 294 72 298 Z" fill="${c('hamstrings')}" ${tap('hamstrings')}/>
+    <path d="M128 298 Q136 332 132 368 L112 366 Q108 332 106 298 Q116 294 128 298 Z" fill="${c('hamstrings')}" ${tap('hamstrings')}/>
+    <!-- calves (gastrocnemius — back of lower leg) -->
+    <path d="M66 378 Q60 416 68 454 L84 452 Q90 416 88 378 Q78 374 66 378 Z" fill="${c('calves')}" ${tap('calves')}/>
+    <path d="M134 378 Q140 416 132 454 L116 452 Q110 416 112 378 Q122 374 134 378 Z" fill="${c('calves')}" ${tap('calves')}/>`;
+
+  const side=muscleMapSide;
+  const muscles = side==='back' ? musclesBack : musclesFront;
+  return `<div class="mmap" style="text-align:center;padding:0">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding:0 4px">
+      <span style="font-size:11px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--txt3)">${side==='back'?'Back':'Front'}</span>
+      <button onclick="flipMuscleMap()" style="background:var(--card2);border:1px solid var(--line);border-radius:20px;padding:6px 14px;font-size:12px;font-weight:700;color:var(--txt);display:inline-flex;align-items:center;gap:6px;cursor:pointer">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.36-15.36L4 4M3 8V4h4"/><path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.36 15.36L20 20M21 16v4h-4"/></svg>
+        Rotate
+      </button>
+    </div>
+    <svg viewBox="0 0 200 480" xmlns="http://www.w3.org/2000/svg" style="max-width:200px;width:100%;height:auto;display:block;margin:0 auto">
+      ${silhouette}
+      ${muscles}
+    </svg>
+  </div>`;
 }
 
 /* ============================================================
@@ -1985,17 +2269,38 @@ function renderWorkout(){
       <p class="small" style="margin-top:8px">Rest up, or if you're feeling good you can pull your next session forward below.</p>
     </div>`;
   } else if(today&&today.recovery){
-    h+=`<div class="card">
-      <div class="sub" style="color:var(--amber)">Today</div><div class="disp" style="font-size:22px">🛌 Recovery day</div>
-      <p class="small" style="margin-top:6px">You earned this — light walking or stretching is great. Feeling fresh and want to train anyway?</p>
-      ${next?`<button class="btn ghost" style="margin-top:12px" onclick="startEarly(${next.idx},'${next.date}')">Train ${next.name} anyway</button>`:''}
-    </div>`;
+    const skips=(detectSkips()||[]).length;
+    if(skips>=2){
+      // they've already missed workouts — don't tell them to rest more, push them to train
+      h+=`<div class="card" style="border-color:var(--amber)">
+        <div class="sub" style="color:var(--amber)">Today · would've been recovery</div>
+        <div class="disp" style="font-size:22px">⚡ Get back to it</div>
+        <p class="small" style="margin-top:6px">You've missed ${skips} workout${skips>1?'s':''} recently — you don't need more rest, you need to train. Let's go.</p>
+        ${next?`<button class="btn" style="margin-top:12px" onclick="startEarly(${next.idx},'${next.date}')">Train ${next.name} now</button>`:''}
+      </div>`;
+    } else {
+      h+=`<div class="card">
+        <div class="sub" style="color:var(--amber)">Today</div><div class="disp" style="font-size:22px">🛌 Recovery day</div>
+        <p class="small" style="margin-top:6px">You earned this — light walking or stretching is great. Feeling fresh and want to train anyway?</p>
+        ${next?`<button class="btn ghost" style="margin-top:12px" onclick="startEarly(${next.idx},'${next.date}')">Train ${next.name} anyway</button>`:''}
+      </div>`;
+    }
   } else if(today&&today.rest){
-    h+=`<div class="card">
-      <div class="sub">Today</div><div class="disp" style="font-size:22px">😌 Scheduled rest</div>
-      <p class="small" style="margin-top:6px">No workout on the plan today.</p>
-      ${next?`<button class="btn ghost" style="margin-top:12px" onclick="startEarly(${next.idx},'${next.date}')">Do ${next.name} early</button>`:''}
-    </div>`;
+    const skips=(detectSkips()||[]).length;
+    if(skips>=2){
+      h+=`<div class="card" style="border-color:var(--amber)">
+        <div class="sub" style="color:var(--amber)">Today · scheduled rest</div>
+        <div class="disp" style="font-size:22px">⚡ Pick up a workout</div>
+        <p class="small" style="margin-top:6px">You've missed ${skips} recent workout${skips>1?'s':''} — today says "rest" on the schedule but you're behind. Better to train.</p>
+        ${next?`<button class="btn" style="margin-top:12px" onclick="startEarly(${next.idx},'${next.date}')">Train ${next.name} now</button>`:''}
+      </div>`;
+    } else {
+      h+=`<div class="card">
+        <div class="sub">Today</div><div class="disp" style="font-size:22px">😌 Scheduled rest</div>
+        <p class="small" style="margin-top:6px">No workout on the plan today.</p>
+        ${next?`<button class="btn ghost" style="margin-top:12px" onclick="startEarly(${next.idx},'${next.date}')">Do ${next.name} early</button>`:''}
+      </div>`;
+    }
   } else if(today&&!today.rest){
     const d=S.program.split[today.idx];
     const workCount=d.exercises.filter(e=>!e.warmup&&!e.cardio).length;
@@ -2130,8 +2435,16 @@ function whyExercise(name,muscle){
 }
 function showForm(name,muscle){
   const ex=Object.values(EXLIB).flat().find(x=>x.n===name);
+  const detail=exerciseDetail(name);
   const yt='https://www.youtube.com/results?search_query='+encodeURIComponent(name+' proper form how to');
   const why=whyExercise(name,muscle);
+  const howToHtml = detail
+    ? `<div class="detail-block"><div class="detail-h">Setup</div><p>${detail.setup}</p></div>
+       <div class="detail-block"><div class="detail-h">How to do the rep</div><p>${detail.execution.replace(/(\d+\.)/g,'<br><b>$1</b>')}</p></div>
+       <div class="detail-block"><div class="detail-h">Cues</div><p>${detail.cues}</p></div>
+       <div class="detail-block"><div class="detail-h">Common mistakes</div><p>${detail.mistakes}</p></div>
+       <div class="detail-block"><div class="detail-h">Breathing</div><p>${detail.breathing}</p></div>`
+    : `<p style="color:var(--txt);line-height:1.6">${ex?ex.c:'Controlled reps, full range of motion, brace your core.'}</p>`;
   modal(`<h3>${name}</h3>
     <div style="background:var(--bg3);border-radius:14px;padding:18px;text-align:center;margin-bottom:14px">
       ${formAnimation(name)}
@@ -2145,7 +2458,7 @@ function showForm(name,muscle){
       <button class="btn ghost sm" id="whyAiBtn" style="margin-top:12px;width:100%" onclick="whyExerciseAI('${name.replace(/'/g,"")}','${muscle}')">💬 Ask coach for more detail</button>
     </div>
     <div style="font-size:12px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--txt2);margin-bottom:6px">How to do it</div>
-    <p style="color:var(--txt);line-height:1.6">${ex?ex.c:'Controlled reps, full range of motion, brace your core.'}</p>
+    ${howToHtml}
     <button class="btn ghost" style="margin-top:18px" onclick="closeModal()">Got it</button>`);
 }
 // optional: richer AI explanation using their full context
@@ -2661,13 +2974,14 @@ function ranksView(){
     }
     const idx=Math.min(5,Math.round(lvl));
     const tier=TIERS[idx];
+    const subPct=Math.round((lvl-idx)*100);
+    const subLabel=subTierLabel(tier, subPct);
     // find the assessed lift that drives this muscle, to compute the next-rank load
     const drivingLift=Object.keys(LIFT_MUSCLES).find(L=>LIFT_MUSCLES[L].includes(m) && S.lifts[L] && S.lifts[L].weight);
     let goalStr='';
     if(drivingLift && idx<5){
       const r=rankLift(drivingLift, epley1RM(+S.lifts[drivingLift].weight,+S.lifts[drivingLift].reps));
       if(r && r.nextW){
-        // convert the next-tier 1RM into a doable working set (≈ reps at that 1RM)
         const workW=Math.round(r.nextW/(1+repForTarget/30)/5)*5;
         goalStr=`${drivingLift}: ~${workW}lb × ${repForTarget} (1RM ${r.nextW}lb) → ${r.nextTier}`;
       }
@@ -2675,7 +2989,7 @@ function ranksView(){
     const pct=Math.min(100,Math.round(lvl/5*100));
     h+=`<div style="padding:11px 0;border-bottom:1px solid var(--line)">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
-        <b style="font-size:14px">${label}</b><span class="tier tier-${tier}" style="font-size:11px;font-weight:800;padding:3px 9px;border-radius:20px">${tier}</span></div>
+        <b style="font-size:14px">${label}</b><span class="tier tier-${tier}" style="font-size:11px;font-weight:800;padding:3px 9px;border-radius:20px">${subLabel}</span></div>
       <div class="rank-bar" style="margin:0"><i style="width:${pct}%"></i></div>
       ${goalStr?`<div class="small" style="margin-top:6px">Next: ${goalStr}</div>`:''}
     </div>`;
@@ -2685,14 +2999,16 @@ function ranksView(){
   // ---- Lift rankings (the assessed lifts, with progress bars) ----
   h+=`<div class="card"><div class="card-h"><div class="t">Lift Rankings</div></div>`;
   let any=false;
+  const bw=+S.profile.weight||140;
   for(const k in S.lifts){const l=S.lifts[k];if(!l||!l.weight)continue;any=true;
     const orm=epley1RM(+l.weight,+l.reps);const r=rankLift(k,orm);if(!r)continue;
     const workW=r.nextW?Math.round(r.nextW/(1+10/30)/5)*5:null;
+    const ratio=(orm/bw).toFixed(2);
     h+=`<div style="padding:14px 0;border-bottom:1px solid var(--line)">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <b style="font-size:15px">${k}</b><span class="tier tier-${r.tier}" style="font-size:11px;font-weight:800;padding:3px 9px;border-radius:20px">${r.tier}</span></div>
+        <b style="font-size:15px">${k}</b><span class="tier tier-${r.tier}" style="font-size:11px;font-weight:800;padding:3px 9px;border-radius:20px">${r.subTier}</span></div>
       <div class="rank-bar" style="margin-top:0"><i style="width:${r.idx*20+r.pct*0.2}%"></i></div>
-      <div class="small" style="margin-top:6px">Est. 1RM <b style="color:var(--txt)">${orm}lb</b>${r.nextW?` · hit <b style="color:var(--txt)">~${workW}lb × 10</b> (1RM ${r.nextW}lb) for <b style="color:var(--acc)">${r.nextTier}</b>`:' · maxed — Elite'}</div>
+      <div class="small" style="margin-top:6px">Current: <b style="color:var(--txt)">${l.weight}×${l.reps}</b> · Est. 1RM <b style="color:var(--txt)">${orm}lb</b> · <b style="color:var(--txt)">${ratio}×</b> bodyweight${r.nextW?`<br>Next: <b style="color:var(--txt)">~${workW}lb × 10</b> (1RM ${r.nextW}lb) for <b style="color:var(--acc)">${r.nextTier}</b>`:' · maxed — Elite'}</div>
     </div>`;
   }
   if(!any)h+=`<p class="small">Log some workouts and your ranks will fill in.</p>`;
@@ -3031,10 +3347,19 @@ function downscaleDataURL(dataURL,maxPx,quality){
    ============================================================ */
 function openSettings(){
   const p=S.profile;
+  const personaLabels={'no-bs':'No-BS Coach','friend':'Friend at the Gym','hype':'Hype Coach','calm':'Calm/Technical','oldschool':'Old-School Mentor'};
+  const personaDescs={'no-bs':'Blunt, honest, calls you out','friend':'Casual, real, talks like a friend','hype':'Gasses you up, high energy','calm':'Thoughtful, explains the why','oldschool':'Gruff, no-nonsense, do the work'};
+  const curPersona=S.settings.coachPersonality||'no-bs';
   modal(`<h3>Settings</h3>
     <div class="field"><label>Your profile</label>
       <button class="btn ghost" onclick="editProfile()">Edit my profile (age, weight, height)</button>
+      <button class="btn ghost" style="margin-top:8px" onclick="editLifts()">Edit my lifts (bench, squat, etc.)</button>
       <p class="small" style="margin-top:8px">You're set as <b style="color:var(--acc)">${p.age}yo, ${p.weight}lb, ${p.heightFt}'${p.heightIn}"</b>. Keeping this current keeps your calories, BMI and strength ranks accurate.</p></div>
+    <div class="field"><label>Coach personality</label>
+      <select class="inp" id="set_persona" onchange="changePersona(this.value)">
+        ${Object.keys(personaLabels).map(k=>`<option value="${k}" ${k===curPersona?'selected':''}>${personaLabels[k]}</option>`).join('')}
+      </select>
+      <p class="small" style="margin-top:8px"><b style="color:var(--acc)">${personaLabels[curPersona]}</b> — ${personaDescs[curPersona]}</p></div>
     <div class="field"><label>Gemini API Key (powers AI coaching)</label>
       <input class="inp" id="set_key" value="${S.settings.geminiKey||''}" placeholder="Paste your free key">
       <p class="small" style="margin-top:8px">Get a free key at <b style="color:var(--acc)">aistudio.google.com</b> → "Get API key". Stored only on this device.</p></div>
@@ -3048,14 +3373,89 @@ function openSettings(){
       ${['bulk','cut','maintain'].map(g=>`<button class="chip ${S.profile.goal===g?'on':''}" onclick="changeGoal('${g}')">${g[0].toUpperCase()+g.slice(1)}</button>`).join('')}</div></div>
     <div class="field"><label>Equipment & program</label>
       <button class="btn ghost" onclick="editEquipment()">Edit my equipment</button>
+      <button class="btn ghost" style="margin-top:8px" onclick="editWeights()">Edit my weights (lb I own)</button>
       <button class="btn ghost" style="margin-top:8px" onclick="rebuildProgramPrompt()">Rebuild my program</button>
       <p class="small" style="margin-top:8px">Rebuild after changing equipment or goal — it re-picks every exercise for the gear you actually have (e.g. no bench → push-ups instead of barbell bench).</p></div>
+    <div class="field"><label>Exercise dictionary</label>
+      <button class="btn ghost" onclick="openExerciseDict()">Browse all exercises</button>
+      <p class="small" style="margin-top:8px">Look up any exercise's form, cues, common mistakes, and a YouTube demo — even ones not in your plan.</p></div>
     <button class="btn" onclick="saveSettings()">Save</button>
     <button class="btn ghost" style="margin-top:10px" onclick="exportData()">Export my data</button>
     <button class="btn ghost" style="margin-top:10px;color:var(--red)" onclick="resetApp()">Reset everything</button>
     <p class="small" style="text-align:center;margin-top:16px">FORGE · all data stored locally on your device</p>`);
 }
 // Edit core profile stats; recalculates everything that depends on them.
+function changePersona(k){ S.settings.coachPersonality=k; save(); openSettings(); toast('Coach personality saved','good'); }
+// Browse every exercise in the library by muscle group. Tap one to see the
+// full form breakdown (the same showForm() used during a workout).
+let dictFilter='';
+function openExerciseDict(){
+  let h=`<h3>Exercise dictionary</h3>
+    <input class="inp" id="dictSearch" placeholder="Search exercises..." style="margin-bottom:12px" oninput="dictFilter=this.value.toLowerCase();renderDict()">
+    <div id="dictBody"></div>
+    <button class="btn ghost" style="margin-top:16px" onclick="openSettings()">Back</button>`;
+  modal(h);
+  renderDict();
+}
+function renderDict(){
+  const body=$('#dictBody');if(!body)return;
+  const q=dictFilter||'';
+  let h='';
+  Object.keys(EXLIB).forEach(muscle=>{
+    const items=EXLIB[muscle].filter(x=>!q||x.n.toLowerCase().includes(q));
+    if(!items.length)return;
+    h+=`<div style="margin-bottom:14px"><div style="font-size:11px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--acc);margin-bottom:6px">${MUSCLE_LABELS[muscle]||muscle}</div>`;
+    items.forEach(ex=>{
+      const hasDetail=!!exerciseDetail(ex.n);
+      h+=`<div onclick="showForm('${ex.n.replace(/'/g,"")}','${muscle}')" style="padding:10px 12px;border-radius:9px;background:var(--bg3);margin-bottom:6px;cursor:pointer;display:flex;justify-content:space-between;align-items:center">
+        <div style="min-width:0">
+          <div style="font-weight:700;font-size:14px">${ex.n}${hasDetail?' <span style="color:var(--acc);font-size:11px">★</span>':''}</div>
+          <div class="small" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${(ex.eq||[]).join(', ')||'bodyweight'}</div>
+        </div>
+        <div style="color:var(--txt3);font-size:20px;margin-left:10px">›</div>
+      </div>`;
+    });
+    h+=`</div>`;
+  });
+  if(!h)h=`<p class="small" style="text-align:center;padding:20px">No exercises match.</p>`;
+  body.innerHTML=h;
+}
+// Edit core lift numbers directly — bench/squat/deadlift/etc — without having
+// to log a workout. Saves recalculate ranks immediately.
+function editLifts(){
+  const lifts=['Bench Press','Squat','Deadlift','Overhead Press','Barbell Row','Bicep Curl'];
+  let h=`<h3>Edit my lifts</h3>
+    <p class="small" style="margin-bottom:14px">Update what you can <b>cleanly</b> lift right now — no spotter pushing for you, no near-misses. These numbers feed your strength ranks and the weights your program suggests, so honest in = honest out.</p>`;
+  lifts.forEach(name=>{
+    const l=S.lifts[name]||{};
+    const w=l.unknown?'':l.weight||'';
+    const r=l.unknown?'':l.reps||'';
+    const id=name.replace(/\s/g,'_');
+    h+=`<div class="field"><label>${name}${l.unknown?' <span class="small">(not done)</span>':''}</label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input class="inp" id="el_w_${id}" type="number" inputmode="decimal" value="${w}" placeholder="lb" style="flex:1">
+        <span style="color:var(--txt3);font-weight:700">×</span>
+        <input class="inp" id="el_r_${id}" type="number" inputmode="numeric" value="${r}" placeholder="reps" style="flex:1">
+      </div>
+    </div>`;
+  });
+  h+=`<button class="btn" onclick="saveLifts()">Save lifts</button>
+    <button class="btn ghost" style="margin-top:10px" onclick="openSettings()">Back</button>`;
+  modal(h);
+}
+function saveLifts(){
+  const lifts=['Bench Press','Squat','Deadlift','Overhead Press','Barbell Row','Bicep Curl'];
+  let updated=0;
+  lifts.forEach(name=>{
+    const id=name.replace(/\s/g,'_');
+    const w=+$('#el_w_'+id).value, r=+$('#el_r_'+id).value;
+    if(w>0&&r>0){S.lifts[name]={weight:w,reps:r};updated++;}
+  });
+  save();closeModal();
+  toast(updated?`${updated} lift${updated>1?'s':''} updated — ranks recalculated`:'No changes','good');
+  if(current==='home')renderHome();
+  if(current==='progress')renderProgress();
+}
 function editProfile(){
   const p=S.profile;
   modal(`<h3>Edit profile</h3>
@@ -3110,6 +3510,46 @@ function toggleOverload(){
   save();openSettings();
   toast(S.settings.progressiveOverload?'Progressive overload on':'Back to fixed weights','good');
 }
+// Edit the exact pounds you own — dumbbell sizes, kettlebell sizes, and how
+// much the barbell can load. These feed directly into the weight picker so a
+// change here immediately updates what your program suggests.
+function editWeights(){
+  const p=S.profile;
+  const dbOpts=[5,8,10,12,15,18,20,25,30,35,40,45,50];
+  const kbOpts=[10,15,20,25,30,35,40,45,53,60];
+  const owned=new Set(p.dumbbells||[]);
+  const kbOwned=new Set(p.kettlebells||[]);
+  let h=`<h3>Edit my weights</h3>
+    <p class="small" style="margin-bottom:14px">Tap the weights you actually own. The app only suggests weights from this list, so keeping it accurate keeps your workouts realistic.</p>
+    <div class="field"><label>Dumbbells (lb per hand)</label>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">${dbOpts.map(w=>`<button class="chip ${owned.has(w)?'on':''}" onclick="toggleOwnedWeight('db',${w});editWeights()">${w}</button>`).join('')}</div>
+      ${(p.dumbbells||[]).length?`<p class="small" style="margin-top:8px">You own: <b style="color:var(--acc)">${(p.dumbbells||[]).sort((a,b)=>a-b).join(', ')}lb</b></p>`:''}</div>
+    <div class="field"><label>Kettlebells (lb)</label>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">${kbOpts.map(w=>`<button class="chip ${kbOwned.has(w)?'on':''}" onclick="toggleOwnedWeight('kb',${w});editWeights()">${w}</button>`).join('')}</div></div>
+    <div class="field"><label>Barbell — max load (lb, including bar)</label>
+      <input class="inp" id="ew_bb" type="number" inputmode="numeric" value="${p.barbellMax||''}" placeholder="e.g. 60 for an adjustable, 300+ for a full bar">
+      <p class="small" style="margin-top:8px">For an adjustable set, this is the heaviest your bar can be loaded. For a real 45lb bar with full plates, type a big number like 315.</p></div>
+    <button class="btn" onclick="saveWeights()">Save weights</button>
+    <button class="btn ghost" style="margin-top:10px" onclick="openSettings()">Back</button>`;
+  modal(h);
+}
+function toggleOwnedWeight(kind,w){
+  if(kind==='db'){
+    S.profile.dumbbells=S.profile.dumbbells||[];
+    const i=S.profile.dumbbells.indexOf(w);
+    if(i>=0)S.profile.dumbbells.splice(i,1); else S.profile.dumbbells.push(w);
+  } else {
+    S.profile.kettlebells=S.profile.kettlebells||[];
+    const i=S.profile.kettlebells.indexOf(w);
+    if(i>=0)S.profile.kettlebells.splice(i,1); else S.profile.kettlebells.push(w);
+  }
+  save();
+}
+function saveWeights(){
+  const bb=+$('#ew_bb').value;
+  if(bb>0)S.profile.barbellMax=bb;
+  save();closeModal();toast('Weights updated — program weights refreshed','good');
+}
 function editEquipment(){
   const selected=new Set(S.profile.equipment||[]);
   let h=`<h3>Your equipment</h3><p style="color:var(--txt2);margin-bottom:12px">Tap to toggle. If you don't have a bench, leave it off and I'll never program flat barbell pressing.</p><div style="max-height:50vh;overflow-y:auto">`;
@@ -3148,7 +3588,28 @@ function notify(title,body){if('Notification'in window&&Notification.permission=
   if(navigator.serviceWorker?.ready){navigator.serviceWorker.ready.then(r=>r.showNotification(title,{body,icon:'icon-180.png',badge:'icon-180.png'})).catch(()=>new Notification(title,{body}));}
   else try{new Notification(title,{body});}catch(e){}}}
 function exportData(){const blob=new Blob([JSON.stringify(S,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='forge-backup.json';a.click();}
-function resetApp(){modal(`<h3>Reset everything?</h3><p style="color:var(--txt2);margin-bottom:18px">This wipes all your data permanently.</p><button class="btn" style="background:var(--red);color:#fff" onclick="localStorage.removeItem('forge');location.reload()">Yes, reset</button><button class="btn ghost" style="margin-top:10px" onclick="closeModal()">Cancel</button>`);}
+function resetApp(){
+  const hasKey=!!(S.settings&&S.settings.geminiKey);
+  modal(`<h3>Reset everything?</h3>
+    <p style="color:var(--txt2);margin-bottom:14px">This wipes your workouts, lifts, history, and settings.</p>
+    ${hasKey?`<div style="background:var(--bg3);border-radius:10px;padding:12px;margin-bottom:18px;display:flex;align-items:center;gap:10px">
+      <input type="checkbox" id="keepKey" checked style="width:20px;height:20px;accent-color:var(--acc)">
+      <label for="keepKey" style="font-size:14px;color:var(--txt);cursor:pointer">Keep my Gemini API key (recommended)</label>
+    </div>`:''}
+    <button class="btn" style="background:var(--red);color:#fff" onclick="doReset()">Yes, reset</button>
+    <button class="btn ghost" style="margin-top:10px" onclick="closeModal()">Cancel</button>`);
+}
+function doReset(){
+  const keep = !!($('#keepKey') && $('#keepKey').checked);
+  const key = keep ? (S.settings&&S.settings.geminiKey) : null;
+  localStorage.removeItem('forge');
+  if(key){
+    // restore the key into a minimal new state so it's preserved
+    const stub={settings:{geminiKey:key}};
+    localStorage.setItem('forge_pending_key', key);
+  }
+  location.reload();
+}
 
 /* ============================================================
    INIT + daily reminder
