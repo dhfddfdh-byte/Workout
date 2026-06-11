@@ -2074,151 +2074,35 @@ function flipMuscleMap(){
 function muscleMapSVG(){
   const ms=muscleStrength();
   const c=m=>muscColor(ms[m]||0);
-  const tap=m=>`onclick="muscleInfo('${m}')" style="cursor:pointer"`;
-  const skin='#262b34';
-  const edge='#363c47';
-  // Properly proportioned figure: head ≈ 1/8 of body height, shoulders ~2.5x head width,
-  // V-taper from shoulders to a narrower waist, then hips slightly wider than waist,
-  // long legs (~half body). viewBox 0 0 200 480.
-  // Each body part drawn separately so the silhouette has real contour, not one boxy mass.
-  const silhouette = `
-    <!-- head -->
-    <ellipse cx="100" cy="34" rx="20" ry="26" fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
-    <!-- neck -->
-    <path d="M92 58 Q100 62 108 58 L110 74 Q100 78 90 74 Z" fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
-    <!-- torso: shoulders → V-taper → narrow waist → hip flare -->
-    <path d="M68 80
-             Q100 73 132 80
-             L150 96 Q156 116 152 142
-             L138 218 Q132 240 124 254
-             L100 258 L76 254
-             Q68 240 62 218 L48 142
-             Q44 116 50 96 Z"
-          fill="${skin}" stroke="${edge}" stroke-width="1.3"/>
-    <!-- LEFT UPPER ARM (with bicep bulge) -->
-    <path d="M50 96
-             Q38 104 32 128
-             Q26 152 28 184
-             L42 186
-             Q46 152 50 132
-             L56 102 Z"
-          fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
-    <!-- RIGHT UPPER ARM -->
-    <path d="M150 96
-             Q162 104 168 128
-             Q174 152 172 184
-             L158 186
-             Q154 152 150 132
-             L144 102 Z"
-          fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
-    <!-- LEFT FOREARM + hand -->
-    <path d="M28 184
-             Q24 210 26 248
-             Q28 268 32 280
-             L40 278 Q44 268 42 248
-             Q42 210 42 186 Z"
-          fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
-    <!-- RIGHT FOREARM + hand -->
-    <path d="M172 184
-             Q176 210 174 248
-             Q172 268 168 280
-             L160 278 Q156 268 158 248
-             Q158 210 158 186 Z"
-          fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
-    <!-- pelvis/hips -->
-    <path d="M62 246 Q100 256 138 246
-             L142 280 Q120 290 100 290 Q80 290 58 280 Z"
-          fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
-    <!-- LEFT THIGH -->
-    <path d="M70 280
-             Q60 320 64 372
-             L90 374
-             Q92 320 96 280 Z"
-          fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
-    <!-- RIGHT THIGH -->
-    <path d="M130 280
-             Q140 320 136 372
-             L110 374
-             Q108 320 104 280 Z"
-          fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
-    <!-- LEFT SHIN -->
-    <path d="M64 372
-             Q60 412 66 458
-             L86 460
-             Q90 412 90 374 Z"
-          fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
-    <!-- RIGHT SHIN -->
-    <path d="M136 372
-             Q140 412 134 458
-             L114 460
-             Q110 412 110 374 Z"
-          fill="${skin}" stroke="${edge}" stroke-width="1.2"/>`;
-
-  // FRONT muscle overlays
-  const musclesFront = `
-    <!-- traps (visible at shoulder line) -->
-    <path d="M86 76 Q100 72 114 76 Q108 86 100 86 Q92 86 86 76 Z" fill="${c('traps')}" ${tap('traps')}/>
-    <!-- front delts -->
-    <path d="M54 94 Q44 104 50 124 Q68 122 76 100 Q64 88 54 94 Z" fill="${c('frontDelt')}" ${tap('frontDelt')}/>
-    <path d="M146 94 Q156 104 150 124 Q132 122 124 100 Q136 88 146 94 Z" fill="${c('frontDelt')}" ${tap('frontDelt')}/>
-    <!-- pectorals (left + right) -->
-    <path d="M76 96 Q98 92 100 100 L100 140 Q84 144 72 134 Q66 116 76 96 Z" fill="${c('chest')}" ${tap('chest')}/>
-    <path d="M124 96 Q102 92 100 100 L100 140 Q116 144 128 134 Q134 116 124 96 Z" fill="${c('chest')}" ${tap('chest')}/>
-    <!-- biceps -->
-    <path d="M32 130 Q26 152 30 182 L42 180 Q46 152 44 128 Q38 124 32 130 Z" fill="${c('biceps')}" ${tap('biceps')}/>
-    <path d="M168 130 Q174 152 170 182 L158 180 Q154 152 156 128 Q162 124 168 130 Z" fill="${c('biceps')}" ${tap('biceps')}/>
-    <!-- forearms -->
-    <path d="M28 190 Q26 220 30 256 L40 254 Q42 220 40 190 Z" fill="${c('forearms')}" ${tap('forearms')}/>
-    <path d="M172 190 Q174 220 170 256 L160 254 Q158 220 160 190 Z" fill="${c('forearms')}" ${tap('forearms')}/>
-    <!-- abs (six-pack) -->
-    <g ${tap('abs')}>
-      <rect x="86" y="144" width="13" height="13" rx="2.5" fill="${c('abs')}"/>
-      <rect x="101" y="144" width="13" height="13" rx="2.5" fill="${c('abs')}"/>
-      <rect x="86" y="159" width="13" height="13" rx="2.5" fill="${c('abs')}"/>
-      <rect x="101" y="159" width="13" height="13" rx="2.5" fill="${c('abs')}"/>
-      <rect x="86" y="174" width="13" height="14" rx="2.5" fill="${c('abs')}"/>
-      <rect x="101" y="174" width="13" height="14" rx="2.5" fill="${c('abs')}"/>
-    </g>
-    <!-- obliques -->
-    <path d="M76 144 Q70 178 76 218 L82 216 Q78 178 80 144 Z" fill="${c('abs')}" opacity="0.55" ${tap('abs')}/>
-    <path d="M124 144 Q130 178 124 218 L118 216 Q122 178 120 144 Z" fill="${c('abs')}" opacity="0.55" ${tap('abs')}/>
-    <!-- quads (left + right thigh) -->
-    <path d="M72 290 Q64 326 68 368 L88 366 Q92 326 94 290 Q84 286 72 290 Z" fill="${c('quads')}" ${tap('quads')}/>
-    <path d="M128 290 Q136 326 132 368 L112 366 Q108 326 106 290 Q116 286 128 290 Z" fill="${c('quads')}" ${tap('quads')}/>
-    <!-- shin (tibialis — front of lower leg) -->
-    <path d="M68 378 Q64 416 70 454 L84 452 Q88 416 86 378 Z" fill="${c('calves')}" opacity="0.5" ${tap('calves')}/>
-    <path d="M132 378 Q136 416 130 454 L116 452 Q112 416 114 378 Z" fill="${c('calves')}" opacity="0.5" ${tap('calves')}/>`;
-
-  // BACK muscle overlays
-  const musclesBack = `
-    <!-- upper traps (prominent on back) -->
-    <path d="M84 70 Q100 66 116 70 Q108 102 100 104 Q92 102 84 70 Z" fill="${c('traps')}" ${tap('traps')}/>
-    <!-- rear delts -->
-    <path d="M52 94 Q42 106 48 126 Q66 124 74 102 Q62 88 52 94 Z" fill="${c('rearDelt')}" ${tap('rearDelt')}/>
-    <path d="M148 94 Q158 106 152 126 Q134 124 126 102 Q138 88 148 94 Z" fill="${c('rearDelt')}" ${tap('rearDelt')}/>
-    <!-- lats — V-shape from armpit to lower back -->
-    <path d="M68 108 Q56 152 76 200 L100 200 L100 110 Q84 102 68 108 Z" fill="${c('lats')}" ${tap('lats')}/>
-    <path d="M132 108 Q144 152 124 200 L100 200 L100 110 Q116 102 132 108 Z" fill="${c('lats')}" ${tap('lats')}/>
-    <!-- middle back (between lats) -->
-    <path d="M88 98 Q100 94 112 98 L110 170 Q100 174 90 170 Z" fill="${c('back')}" ${tap('back')}/>
-    <!-- triceps (back of upper arm) -->
-    <path d="M30 130 Q24 154 28 184 L42 182 Q46 154 46 126 Q38 122 30 130 Z" fill="${c('triceps')}" ${tap('triceps')}/>
-    <path d="M170 130 Q176 154 172 184 L158 182 Q154 154 154 126 Q162 122 170 130 Z" fill="${c('triceps')}" ${tap('triceps')}/>
-    <!-- forearms (back) -->
-    <path d="M28 190 Q26 220 30 256 L40 254 Q42 220 40 190 Z" fill="${c('forearms')}" ${tap('forearms')}/>
-    <path d="M172 190 Q174 220 170 256 L160 254 Q158 220 160 190 Z" fill="${c('forearms')}" ${tap('forearms')}/>
-    <!-- glutes (two cheeks) -->
-    <path d="M66 258 Q58 282 70 296 Q86 298 98 292 L98 260 Q82 260 66 258 Z" fill="${c('glutes')}" ${tap('glutes')}/>
-    <path d="M134 258 Q142 282 130 296 Q114 298 102 292 L102 260 Q118 260 134 258 Z" fill="${c('glutes')}" ${tap('glutes')}/>
-    <!-- hamstrings (back of thigh) -->
-    <path d="M72 298 Q64 332 68 368 L88 366 Q92 332 94 298 Q84 294 72 298 Z" fill="${c('hamstrings')}" ${tap('hamstrings')}/>
-    <path d="M128 298 Q136 332 132 368 L112 366 Q108 332 106 298 Q116 294 128 298 Z" fill="${c('hamstrings')}" ${tap('hamstrings')}/>
-    <!-- calves (gastrocnemius — back of lower leg) -->
-    <path d="M66 378 Q60 416 68 454 L84 452 Q90 416 88 378 Q78 374 66 378 Z" fill="${c('calves')}" ${tap('calves')}/>
-    <path d="M134 378 Q140 416 132 454 L116 452 Q110 416 112 378 Q122 374 134 378 Z" fill="${c('calves')}" ${tap('calves')}/>`;
-
   const side=muscleMapSide;
-  const muscles = side==='back' ? musclesBack : musclesFront;
+  // overlay tint colour with transparency for the realistic figure
+  const tint=m=>{const v=ms[m]||0; const col=muscColor(v);
+    return v>=1 ? col : '#5b6472'; };
+  const op=m=>{const v=ms[m]||0; return v>=1?0.55:0.32;};
+  let body;
+  if(side==='front' && typeof BODY_FRONT_INNER!=='undefined'){
+    // realistic figure + translucent muscle zones on top (only where there's data,
+    // so untrained muscles just show the natural figure instead of muddy grey)
+    const zones=BODY_FRONT_ZONES.map(z=>{
+      const v=ms[z.m]||0;
+      if(v<0.5) return ''; // no data → no tint, keep the figure clean
+      const [cx,cy,rx,ry]=z.el;
+      return `<ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="${muscColor(v)}" opacity="0.5" onclick="muscleInfo('${z.m}')" style="cursor:pointer"/>`;
+    }).join('');
+    // invisible tap targets so EVERY muscle is still tappable even with no tint
+    const taps=BODY_FRONT_ZONES.map(z=>{
+      const [cx,cy,rx,ry]=z.el;
+      return `<ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="transparent" onclick="muscleInfo('${z.m}')" style="cursor:pointer"/>`;
+    }).join('');
+    body=`<svg viewBox="0 0 861 1675" xmlns="http://www.w3.org/2000/svg" style="max-height:440px;width:auto;max-width:100%;height:auto;display:block;margin:0 auto">
+      ${BODY_FRONT_INNER}
+      <g>${zones}</g>
+      <g>${taps}</g>
+    </svg>`;
+  } else {
+    // back view — drawn anatomical fallback
+    body=drawnBackMapSVG(c);
+  }
   return `<div class="mmap" style="text-align:center;padding:0">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding:0 4px">
       <span style="font-size:11px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--txt3)">${side==='back'?'Back':'Front'}</span>
@@ -2227,11 +2111,44 @@ function muscleMapSVG(){
         Rotate
       </button>
     </div>
-    <svg viewBox="0 0 200 480" xmlns="http://www.w3.org/2000/svg" style="max-width:200px;width:100%;height:auto;display:block;margin:0 auto">
-      ${silhouette}
-      ${muscles}
-    </svg>
+    ${body}
   </div>`;
+}
+// drawn anatomical BACK view (front uses the realistic CC0 figure)
+function drawnBackMapSVG(c){
+  const tap=m=>`onclick="muscleInfo('${m}')" style="cursor:pointer"`;
+  const skin='#262b34', edge='#363c47';
+  const silhouette=`
+    <ellipse cx="100" cy="34" rx="20" ry="26" fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
+    <path d="M92 58 Q100 62 108 58 L110 74 Q100 78 90 74 Z" fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
+    <path d="M68 80 Q100 73 132 80 L150 96 Q156 116 152 142 L138 218 Q132 240 124 254 L100 258 L76 254 Q68 240 62 218 L48 142 Q44 116 50 96 Z" fill="${skin}" stroke="${edge}" stroke-width="1.3"/>
+    <path d="M50 96 Q38 104 32 128 Q26 152 28 184 L42 186 Q46 152 50 132 L56 102 Z" fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
+    <path d="M150 96 Q162 104 168 128 Q174 152 172 184 L158 186 Q154 152 150 132 L144 102 Z" fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
+    <path d="M28 184 Q24 210 26 248 Q28 268 32 280 L40 278 Q44 268 42 248 Q42 210 42 186 Z" fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
+    <path d="M172 184 Q176 210 174 248 Q172 268 168 280 L160 278 Q156 268 158 248 Q158 210 158 186 Z" fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
+    <path d="M62 246 Q100 256 138 246 L142 280 Q120 290 100 290 Q80 290 58 280 Z" fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
+    <path d="M70 280 Q60 320 64 372 L90 374 Q92 320 96 280 Z" fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
+    <path d="M130 280 Q140 320 136 372 L110 374 Q108 320 104 280 Z" fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
+    <path d="M64 372 Q60 412 66 458 L86 460 Q90 412 90 374 Z" fill="${skin}" stroke="${edge}" stroke-width="1.2"/>
+    <path d="M136 372 Q140 412 134 458 L114 460 Q110 412 110 374 Z" fill="${skin}" stroke="${edge}" stroke-width="1.2"/>`;
+  const muscles=`
+    <path d="M84 70 Q100 66 116 70 Q108 102 100 104 Q92 102 84 70 Z" fill="${c('traps')}" ${tap('traps')}/>
+    <path d="M52 94 Q42 106 48 126 Q66 124 74 102 Q62 88 52 94 Z" fill="${c('rearDelt')}" ${tap('rearDelt')}/>
+    <path d="M148 94 Q158 106 152 126 Q134 124 126 102 Q138 88 148 94 Z" fill="${c('rearDelt')}" ${tap('rearDelt')}/>
+    <path d="M68 108 Q56 152 76 200 L100 200 L100 110 Q84 102 68 108 Z" fill="${c('lats')}" ${tap('lats')}/>
+    <path d="M132 108 Q144 152 124 200 L100 200 L100 110 Q116 102 132 108 Z" fill="${c('lats')}" ${tap('lats')}/>
+    <path d="M88 98 Q100 94 112 98 L110 170 Q100 174 90 170 Z" fill="${c('back')}" ${tap('back')}/>
+    <path d="M30 130 Q24 154 28 184 L42 182 Q46 154 46 126 Q38 122 30 130 Z" fill="${c('triceps')}" ${tap('triceps')}/>
+    <path d="M170 130 Q176 154 172 184 L158 182 Q154 154 154 126 Q162 122 170 130 Z" fill="${c('triceps')}" ${tap('triceps')}/>
+    <path d="M28 190 Q26 220 30 256 L40 254 Q42 220 40 190 Z" fill="${c('forearms')}" ${tap('forearms')}/>
+    <path d="M172 190 Q174 220 170 256 L160 254 Q158 220 160 190 Z" fill="${c('forearms')}" ${tap('forearms')}/>
+    <path d="M66 258 Q58 282 70 296 Q86 298 98 292 L98 260 Q82 260 66 258 Z" fill="${c('glutes')}" ${tap('glutes')}/>
+    <path d="M134 258 Q142 282 130 296 Q114 298 102 292 L102 260 Q118 260 134 258 Z" fill="${c('glutes')}" ${tap('glutes')}/>
+    <path d="M72 298 Q64 332 68 368 L88 366 Q92 332 94 298 Q84 294 72 298 Z" fill="${c('hamstrings')}" ${tap('hamstrings')}/>
+    <path d="M128 298 Q136 332 132 368 L112 366 Q108 332 106 298 Q116 294 128 298 Z" fill="${c('hamstrings')}" ${tap('hamstrings')}/>
+    <path d="M66 378 Q60 416 68 454 L84 452 Q90 416 88 378 Q78 374 66 378 Z" fill="${c('calves')}" ${tap('calves')}/>
+    <path d="M134 378 Q140 416 132 454 L116 452 Q110 416 112 378 Q122 374 134 378 Z" fill="${c('calves')}" ${tap('calves')}/>`;
+  return `<svg viewBox="0 0 200 480" xmlns="http://www.w3.org/2000/svg" style="max-width:200px;width:100%;height:auto;display:block;margin:0 auto">${silhouette}${muscles}</svg>`;
 }
 
 /* ============================================================
